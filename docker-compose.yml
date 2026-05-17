@@ -1,0 +1,42 @@
+services:
+
+  backend:
+    build: ./backend
+    container_name: neuroterm-backend
+    restart: unless-stopped
+    tty: true
+    environment:
+      - PORT=3001
+      - DB_PATH=/data/neuroterm.sqlite
+      - NEUROTERM_AUTH_TOKEN=${NEUROTERM_AUTH_TOKEN}
+      - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY}
+      - DEFAULT_TMUX_SESSION=${DEFAULT_TMUX_SESSION:-neuroterm}
+      - WORKSPACE_PATH=/workspace
+    volumes:
+      - neuroterm_data:/data
+      - neuroterm_home:/root
+      - ${HOST_WORKSPACE:-./workspace}:/workspace
+    networks:
+      - neuroterm
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - VITE_AUTH_TOKEN=${NEUROTERM_AUTH_TOKEN}
+    container_name: neuroterm-frontend
+    restart: unless-stopped
+    ports:
+      - "${NEUROTERM_PORT:-3000}:3000"
+    depends_on:
+      - backend
+    networks:
+      - neuroterm
+
+networks:
+  neuroterm:
+    driver: bridge
+
+volumes:
+  neuroterm_data:
+  neuroterm_home:
