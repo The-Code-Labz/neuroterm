@@ -19,7 +19,8 @@ export default function ConnectionList(): JSX.Element {
         name: conn.name,
         tmux_session: conn.tmuxSession,
         mode: conn.mode,
-        connection_id: conn.id,
+        // Local sessions have no DB-backed connection_id — only SSH sessions do
+        connection_id: conn.mode === 'local' ? undefined : conn.id,
         cols: 220,
         rows: 50,
       });
