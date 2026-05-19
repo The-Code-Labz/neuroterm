@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Plus, Terminal, Pencil, Trash2, Zap, Server } from 'lucide-react';
-import { useSessionStore, type Connection } from '../../store/session-store';
+import { useSessionStore, type Connection, type ConnectionInput } from '../../store/session-store';
 import ConnectionFormModal from './ConnectionFormModal';
 import { api } from '../../lib/api';
 import { useNavigate } from 'react-router-dom';
@@ -19,8 +19,9 @@ export default function ConnectionList(): JSX.Element {
         name: conn.name,
         tmux_session: conn.tmuxSession,
         mode: conn.mode,
-        // Local sessions have no DB-backed connection_id — only SSH sessions do
-        connection_id: conn.mode === 'local' ? undefined : conn.id,
+        // Local sessions have no DB-backed connection_id
+        // SSH sessions use the backend-assigned DB id stored in conn.backendId
+        connection_id: conn.mode === 'local' ? undefined : (conn.backendId ?? undefined),
         cols: 220,
         rows: 50,
       });
@@ -34,16 +35,69 @@ export default function ConnectionList(): JSX.Element {
     }
   };
 
-  const handleSave = (input: Parameters<typeof addConnection>[0]) => {
-    if (editTarget) {
-      updateConnection(editTarget.id, input);
-    } else {
-      addConnection(input);
+  const handleSave = async (input: ConnectionInput) => {
+    try {
+      if (input.mode === 'ssh') {
+        // Persist SSH connection to backend DB so FK constraint is satisfied
+        if (editTarget?.backendId) {
+          // Update existing backend connection
+          await api.connections.update(editTarget.backendId, {
+            name:         input.name,
+            host:         input.host,
+            port:         input.port,
+            username:     input.username,
+            auth_type:    input.authMode === 'password' ? 'password' : 'private_key',
+            password:     input.password,
+            private_key:  input.privateKey,
+            tmux_session: input.tmuxSession,
+            mode:         'ssh',
+          });
+          updateConnection(editTarget.id, { ...input, backendId: editTarget.backendId });
+        } else {
+          // Create new backend connection — get the real DB id back
+          const created = await api.connections.create({
+            name:         input.name,
+            host:         input.host,
+            port:         input.port,
+            username:     input.username,
+            auth_type:    input.authMode === 'password' ? 'password' : 'private_key',
+            password:     input.password,
+            private_key:  input.privateKey,
+            tmux_session: input.tmuxSession,
+            mode:         'ssh',
+          });
+          // Store backendId so we can reference the DB row later
+          if (editTarget) {
+            updateConnection(editTarget.id, { ...input, backendId: created.id });
+          } else {
+            addConnection({ ...input, backendId: created.id });
+          }
+        }
+      } else {
+        // Local connections — frontend only, no backend row needed
+        if (editTarget) {
+          updateConnection(editTarget.id, input);
+        } else {
+          addConnection(input);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to save connection', err);
+      alert(`Failed to save: ${(err as Error).message}`);
     }
   };
 
-  const handleDelete = (id: string) => {
-    if (confirm('Delete this connection?')) deleteConnection(id);
+  const handleDelete = async (conn: Connection) => {
+    if (!confirm('Delete this connection?')) return;
+    try {
+      if (conn.mode === 'ssh' && conn.backendId) {
+        await api.connections.delete(conn.backendId);
+      }
+      deleteConnection(conn.id);
+    } catch (err) {
+      console.error('Failed to delete connection', err);
+      alert(`Failed to delete: ${(err as Error).message}`);
+    }
   };
 
   return (
@@ -94,7 +148,7 @@ export default function ConnectionList(): JSX.Element {
                 <Pencil size={12} />
               </button>
               <button
-                onClick={() => handleDelete(conn.id)}
+                onClick={() => handleDelete(conn)}
                 className="p-1.5 rounded text-gray-500 hover:text-neuro-red hover:bg-neuro-red/10 transition-colors"
               >
                 <Trash2 size={12} />
