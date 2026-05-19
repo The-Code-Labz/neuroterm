@@ -42,29 +42,31 @@ export default function ConnectionList(): JSX.Element {
         if (editTarget?.backendId) {
           // Update existing backend connection
           await api.connections.update(editTarget.backendId, {
-            name:         input.name,
-            host:         input.host,
-            port:         input.port,
-            username:     input.username,
-            auth_type:    input.authMode === 'password' ? 'password' : 'private_key',
-            password:     input.password,
-            private_key:  input.privateKey,
-            tmux_session: input.tmuxSession,
-            mode:         'ssh',
+            name:          input.name,
+            host:          input.host,
+            port:          input.port,
+            username:      input.username,
+            auth_type:     input.authMode === 'password' ? 'password' : 'private_key',
+            password:      input.credentialId ? undefined : input.password,
+            private_key:   input.credentialId ? undefined : input.privateKey,
+            credential_id: input.credentialId ?? undefined,
+            tmux_session:  input.tmuxSession,
+            mode:          'ssh',
           });
           updateConnection(editTarget.id, { ...input, backendId: editTarget.backendId });
         } else {
           // Create new backend connection — get the real DB id back
           const created = await api.connections.create({
-            name:         input.name,
-            host:         input.host,
-            port:         input.port,
-            username:     input.username,
-            auth_type:    input.authMode === 'password' ? 'password' : 'private_key',
-            password:     input.password,
-            private_key:  input.privateKey,
-            tmux_session: input.tmuxSession,
-            mode:         'ssh',
+            name:          input.name,
+            host:          input.host,
+            port:          input.port,
+            username:      input.username,
+            auth_type:     input.authMode === 'password' ? 'password' : 'private_key',
+            password:      input.credentialId ? undefined : input.password,
+            private_key:   input.credentialId ? undefined : input.privateKey,
+            credential_id: input.credentialId ?? undefined,
+            tmux_session:  input.tmuxSession,
+            mode:          'ssh',
           });
           // Store backendId so we can reference the DB row later
           if (editTarget) {

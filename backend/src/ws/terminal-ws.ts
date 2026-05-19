@@ -42,7 +42,7 @@ export function handleTerminalWs(
   req: IncomingMessage,
   opts: TerminalWsOptions
 ): void {
-  const url      = new URL(req.url || '/', 'http://localhost');
+  const url       = new URL(req.url || '/', 'http://localhost');
   const sessionId = url.pathname.split('/').pop() || '';
   const { db, crypto, tmux } = opts;
 
@@ -57,10 +57,10 @@ export function handleTerminalWs(
     return;
   }
 
-  const mode         = session['mode'] as string;
-  const tmuxSession  = session['tmux_session'] as string;
-  const cols         = (session['cols'] as number) || 220;
-  const rows         = (session['rows'] as number) || 50;
+  const mode        = session['mode'] as string;
+  const tmuxSession = session['tmux_session'] as string;
+  const cols        = (session['cols'] as number) || 220;
+  const rows        = (session['rows'] as number) || 50;
 
   // Mark last connected
   db.prepare(`UPDATE terminal_sessions SET last_connected_at = ?, updated_at = ? WHERE id = ?`)
@@ -77,6 +77,7 @@ export function handleTerminalWs(
   if (mode === 'local') {
     spawnLocalTmux({ ws, tmux, tmuxSession, cols, rows, sessionId, pingInterval });
   } else {
+    // Load connection row
     const connection = db.prepare(
       `SELECT * FROM connections WHERE id = ?`
     ).get(session['connection_id'] as string) as Record<string, unknown> | undefined;
@@ -88,7 +89,30 @@ export function handleTerminalWs(
       return;
     }
 
-    spawnSshTmux({ ws, crypto, tmux, connection, tmuxSession, cols, rows, sessionId, pingInterval });
+    // ── Resolve auth source ─────────────────────────────────────────────────
+    // If the connection references a saved credential, load auth from there.
+    // Otherwise use the auth stored directly on the connection row.
+    let authRow: Record<string, unknown> = connection;
+
+    const credentialId = connection['credential_id'] as string | null;
+    if (credentialId) {
+      const credential = db.prepare(
+        `SELECT * FROM credentials WHERE id = ?`
+      ).get(credentialId) as Record<string, unknown> | undefined;
+
+      if (credential) {
+        // Use credential's auth fields but keep connection's host/port/username
+        authRow = {
+          ...connection,
+          auth_type:       credential['auth_type'],
+          password_enc:    credential['password_enc'],
+          private_key_enc: credential['private_key_enc'],
+          passphrase_enc:  credential['passphrase_enc'],
+        };
+      }
+    }
+
+    spawnSshTmux({ ws, crypto, tmux, connection: authRow, tmuxSession, cols, rows, sessionId, pingInterval });
   }
 }
 
@@ -146,14 +170,13 @@ function spawnLocalTmux(opts: LocalOpts): void {
       case 'ping':   send(ws, { type: 'pong' }); break;
       case 'close':
       case 'detach':
-        ptyProcess.write('q'); // detach tmux client gracefully
+        ptyProcess.write('q');
         break;
     }
   });
 
   ws.on('close', () => {
     clearInterval(pingInterval);
-    // Do NOT kill tmux — let the session persist
     try { ptyProcess.kill(); } catch { /* already gone */ }
   });
 
@@ -179,10 +202,10 @@ function spawnSshTmux(opts: SshOpts): void {
 
   const sshClient = new SSHClient();
 
-  const host      = connection['host'] as string;
-  const port      = (connection['port'] as number) || 22;
-  const username  = connection['username'] as string;
-  const authType  = connection['auth_type'] as string;
+  const host     = connection['host'] as string;
+  const port     = (connection['port'] as number) || 22;
+  const username = connection['username'] as string;
+  const authType = connection['auth_type'] as string;
 
   const connectConfig: Parameters<SSHClient['connect']>[0] = {
     host,
@@ -196,7 +219,7 @@ function spawnSshTmux(opts: SshOpts): void {
     const privateKey = crypto.decrypt(connection['private_key_enc'] as string);
     const passphrase = crypto.decrypt(connection['passphrase_enc'] as string);
     if (!privateKey) {
-      send(ws, { type: 'error', code: 'NO_KEY', message: 'Private key not found' });
+      send(ws, { type: 'error', code: 'NO_KEY', message: 'Private key not found — check saved credential' });
       clearInterval(pingInterval);
       ws.close();
       return;
@@ -206,7 +229,7 @@ function spawnSshTmux(opts: SshOpts): void {
   } else {
     const password = crypto.decrypt(connection['password_enc'] as string);
     if (!password) {
-      send(ws, { type: 'error', code: 'NO_PASSWORD', message: 'Password not found' });
+      send(ws, { type: 'error', code: 'NO_PASSWORD', message: 'Password not found — check saved credential' });
       clearInterval(pingInterval);
       ws.close();
       return;
@@ -264,13 +287,15 @@ function spawnSshTmux(opts: SshOpts): void {
 
       ws.on('close', () => {
         clearInterval(pingInterval);
-        // tmux keeps running on remote — only close the SSH stream
         try { stream.close(); } catch { /* ignore */ }
-        sshClient.end();
+        try { sshClient.end(); } catch { /* ignore */ }
       });
 
       activeSessions.set(opts.sessionId, {
-        cleanup: () => { try { stream.close(); sshClient.end(); } catch { /* ignore */ } }
+        cleanup: () => {
+          try { stream.close(); } catch { /* ignore */ }
+          try { sshClient.end(); } catch { /* ignore */ }
+        },
       });
     });
   });
