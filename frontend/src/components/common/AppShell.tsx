@@ -1,87 +1,81 @@
-import { Outlet, NavLink } from 'react-router-dom';
-import { Terminal, PlugZap } from 'lucide-react';
-import { useSessionStore } from '../../store/session-store';
+import { NavLink } from 'react-router-dom';
+import { Server, Terminal, Key, LogOut, User } from 'lucide-react';
+import type { ApiUser } from '../../lib/api';
 
-export default function AppShell(): JSX.Element {
-  const tabs = useSessionStore((s) => s.tabs);
+interface AppShellProps {
+  children: React.ReactNode;
+  user?: ApiUser | null;
+  onLogout?: () => void;
+}
 
+const navItems = [
+  { to: '/',            label: 'Connections', icon: Server },
+  { to: '/credentials', label: 'Credentials', icon: Key },
+  { to: '/terminal',    label: 'Terminal',    icon: Terminal },
+];
+
+export default function AppShell({ children, user, onLogout }: AppShellProps): JSX.Element {
   return (
-    <div className="flex h-full w-full bg-neuro-bg overflow-hidden">
+    <div className="flex h-screen bg-neuro-bg text-gray-200 overflow-hidden">
       {/* Sidebar */}
-      <aside className="flex flex-col w-56 flex-shrink-0 bg-neuro-panel border-r border-neuro-border">
+      <aside className="w-48 flex-shrink-0 flex flex-col border-r border-neuro-border bg-neuro-panel">
         {/* Logo */}
-        <div className="flex items-center gap-2.5 px-4 py-4 border-b border-neuro-border">
-          <div className="w-7 h-7 rounded bg-neuro-cyan/10 border border-neuro-cyan/30 flex items-center justify-center">
-            <Terminal size={14} className="text-neuro-cyan" />
-          </div>
-          <div>
-            <div className="text-sm font-mono font-bold text-neuro-cyan leading-none">NeuroTerm</div>
-            <div className="text-[10px] font-mono text-gray-600 mt-0.5">tmux session manager</div>
-          </div>
+        <div className="px-4 py-4 border-b border-neuro-border">
+          <div className="text-neuro-cyan font-mono font-bold text-sm tracking-tight">&gt;_ NeuroTerm</div>
+          <div className="text-gray-600 font-mono text-xs mt-0.5">tmux session manager</div>
         </div>
 
         {/* Nav */}
-        <nav className="flex flex-col gap-1 p-2 border-b border-neuro-border">
-          <NavLink
-            to="/"
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-3 py-2 rounded text-xs font-mono transition-colors ${
-                isActive
-                  ? 'bg-neuro-cyan/10 text-neuro-cyan border border-neuro-cyan/20'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-neuro-bg'
-              }`
-            }
-          >
-            <PlugZap size={13} />
-            Connections
-          </NavLink>
-
-          <NavLink
-            to="/terminal"
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-3 py-2 rounded text-xs font-mono transition-colors ${
-                isActive
-                  ? 'bg-neuro-cyan/10 text-neuro-cyan border border-neuro-cyan/20'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-neuro-bg'
-              }`
-            }
-          >
-            <Terminal size={13} />
-            Terminal
-            {tabs.length > 0 && (
-              <span className="ml-auto bg-neuro-green/20 text-neuro-green text-[10px] px-1.5 py-0.5 rounded-full border border-neuro-green/30">
-                {tabs.length}
-              </span>
-            )}
-          </NavLink>
+        <nav className="flex-1 p-2 space-y-0.5">
+          {navItems.map(({ to, label, icon: Icon }) => (
+            <NavLink
+              key={to}
+              to={to}
+              end={to === '/'}
+              className={({ isActive }) =>
+                `flex items-center gap-2.5 px-3 py-2 rounded text-xs font-mono transition-colors ${
+                  isActive
+                    ? 'bg-neuro-cyan/10 text-neuro-cyan border border-neuro-cyan/20'
+                    : 'text-gray-400 hover:text-gray-200 hover:bg-neuro-bg'
+                }`
+              }
+            >
+              <Icon size={14} />
+              {label}
+            </NavLink>
+          ))}
         </nav>
 
-        {/* Active sessions mini list */}
-        {tabs.length > 0 && (
-          <div className="flex-1 overflow-y-auto p-2">
-            <div className="text-[10px] font-mono text-gray-600 uppercase tracking-wider px-2 mb-1">Active</div>
-            {tabs.map((tab) => (
-              <NavLink
-                key={tab.id}
-                to="/terminal"
-                className="flex items-center gap-2 px-2 py-1.5 rounded text-xs font-mono text-gray-400 hover:text-gray-200 hover:bg-neuro-bg transition-colors"
+        {/* User / Logout */}
+        {(user || onLogout) && (
+          <div className="p-3 border-t border-neuro-border">
+            {user && (
+              <div className="flex items-center gap-2 px-2 py-1.5 mb-1">
+                <User size={12} className="text-gray-500 flex-shrink-0" />
+                <span className="text-xs font-mono text-gray-400 truncate">{user.username}</span>
+                {user.role === 'admin' && (
+                  <span className="ml-auto text-[10px] font-mono text-neuro-cyan bg-neuro-cyan/10 px-1 rounded">
+                    admin
+                  </span>
+                )}
+              </div>
+            )}
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded text-xs font-mono text-gray-500 hover:text-neuro-red hover:bg-neuro-red/10 transition-colors"
               >
-                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                  tab.status === 'connected'    ? 'bg-neuro-green' :
-                  tab.status === 'reconnecting' ? 'bg-neuro-yellow' :
-                  tab.status === 'disconnected' ? 'bg-neuro-red' :
-                  'bg-gray-500'
-                }`} />
-                <span className="truncate">{tab.title}</span>
-              </NavLink>
-            ))}
+                <LogOut size={12} />
+                Sign Out
+              </button>
+            )}
           </div>
         )}
       </aside>
 
       {/* Main */}
       <main className="flex-1 overflow-hidden">
-        <Outlet />
+        {children}
       </main>
     </div>
   );

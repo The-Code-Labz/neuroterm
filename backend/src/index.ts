@@ -6,6 +6,8 @@ import { CryptoService } from './services/crypto-service';
 import { TmuxService } from './services/tmux-service';
 import { connectionsRouter } from './api/connections.routes';
 import { sessionsRouter } from './api/sessions.routes';
+import { credentialsRouter } from './api/credentials.routes';
+import { authRouter } from './api/auth.routes';
 import { handleTerminalWs } from './ws/terminal-ws';
 import { authMiddleware, isAuthorizedRequest } from './middleware/auth';
 
@@ -22,19 +24,21 @@ tmux.createSession(process.env.DEFAULT_TMUX_SESSION || 'neuroterm');
 // ── Express ───────────────────────────────────────────────────────────────────
 const app = express();
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '2mb' }));
 
 app.use((req, _res, next) => {
   console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
   next();
 });
 
-// Health — no auth
+// Public routes — no auth
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', ts: new Date().toISOString() });
 });
+app.use('/api/auth', authRouter(db));
 
-// Protected routes
+// Protected routes — static token OR valid JWT
+app.use('/api/credentials', authMiddleware, credentialsRouter(db, crypto));
 app.use('/api/connections', authMiddleware, connectionsRouter(db, crypto));
 app.use('/api/sessions',    authMiddleware, sessionsRouter(db, tmux));
 
