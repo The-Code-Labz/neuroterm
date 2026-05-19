@@ -26,6 +26,8 @@ services:
         - VITE_AUTH_TOKEN=${NEUROTERM_AUTH_TOKEN}
     container_name: neuroterm-frontend
     restart: unless-stopped
+    environment:
+      - NEUROTERM_AUTH_TOKEN=${NEUROTERM_AUTH_TOKEN}
     ports:
       - "${NEUROTERM_PORT:-3000}:3000"
     depends_on:
