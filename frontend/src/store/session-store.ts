@@ -17,6 +17,7 @@ export interface Connection {
   privateKey?: string;
   tmuxSession: string;
   backendId?: string; // DB id from backend connections table (SSH only)
+  credentialId?: string; // saved credential profile id (SSH only)
   createdAt: string;
   updatedAt: string;
 }

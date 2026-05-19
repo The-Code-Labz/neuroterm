@@ -33,6 +33,7 @@ export interface ApiUser {
 export interface ApiCredential {
   id: string;
   name: string;
+  host: string | null;
   username: string;
   auth_type: 'password' | 'private_key';
   has_password: boolean;
@@ -44,6 +45,7 @@ export interface ApiCredential {
 
 export interface CreateCredentialPayload {
   name: string;
+  host?: string;
   username: string;
   auth_type: 'password' | 'private_key';
   password?: string;

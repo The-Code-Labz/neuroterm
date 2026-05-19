@@ -16,9 +16,7 @@ export default function ProtectedRoute({ user, loading, children }: ProtectedRou
     );
   }
 
-  // If static token is configured AND no JWT user, still allow access (backwards compat)
-  const hasStaticToken = Boolean(import.meta.env.VITE_AUTH_TOKEN);
-  if (!user && !hasStaticToken) {
+  if (!user) {
     return <Navigate to="/login" replace />;
   }
 

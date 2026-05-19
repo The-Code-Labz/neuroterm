@@ -4,6 +4,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS credentials (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  host TEXT,
   username TEXT NOT NULL,
   auth_type TEXT NOT NULL CHECK (auth_type IN ('password', 'private_key')),
   password_enc TEXT,

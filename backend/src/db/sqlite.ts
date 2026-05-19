@@ -23,9 +23,12 @@ function runMigrations(db: AppDatabase): void {
     `).run();
   }
 
-  db.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_connections_credential ON connections(credential_id)
-  `).run();
+  // Add host to credentials if missing
+  if (!hasColumn(db, 'credentials', 'host')) {
+    db.prepare(`ALTER TABLE credentials ADD COLUMN host TEXT`).run();
+  }
+
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_connections_credential ON connections(credential_id)`).run();
 }
 
 export function openDatabase(
@@ -43,7 +46,7 @@ export function openDatabase(
 
   db.prepare(`
     INSERT INTO settings (key, value, updated_at)
-    VALUES ('schema_version', '2', ?)
+    VALUES ('schema_version', '3', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run(new Date().toISOString());
 

@@ -7,32 +7,38 @@ import ConnectionsPage from './pages/ConnectionsPage';
 import CredentialsPage from './pages/CredentialsPage';
 import TerminalPage from './pages/TerminalPage';
 
-export default function App(): JSX.Element {
+function AppRoutes(): JSX.Element {
   const auth = useAuth();
 
   return (
-    <BrowserRouter>
-      <Routes>
-        {/* Public */}
-        <Route path="/login" element={<LoginPage auth={auth} />} />
+    <Routes>
+      {/* Public */}
+      <Route path="/login" element={<LoginPage auth={auth} />} />
 
-        {/* Protected */}
-        <Route
-          path="/*"
-          element={
-            <ProtectedRoute user={auth.user} loading={auth.loading}>
-              <AppShell user={auth.user} onLogout={auth.logout}>
-                <Routes>
-                  <Route path="/"            element={<ConnectionsPage />} />
-                  <Route path="/credentials" element={<CredentialsPage />} />
-                  <Route path="/terminal"    element={<TerminalPage />} />
-                  <Route path="*"            element={<Navigate to="/" replace />} />
-                </Routes>
-              </AppShell>
-            </ProtectedRoute>
-          }
-        />
-      </Routes>
+      {/* Protected */}
+      <Route
+        path="/*"
+        element={
+          <ProtectedRoute user={auth.user} loading={auth.loading}>
+            <AppShell user={auth.user} onLogout={auth.logout}>
+              <Routes>
+                <Route path="/"            element={<ConnectionsPage />} />
+                <Route path="/credentials" element={<CredentialsPage />} />
+                <Route path="/terminal"    element={<TerminalPage />} />
+                <Route path="*"            element={<Navigate to="/" replace />} />
+              </Routes>
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+    </Routes>
+  );
+}
+
+export default function App(): JSX.Element {
+  return (
+    <BrowserRouter>
+      <AppRoutes />
     </BrowserRouter>
   );
 }

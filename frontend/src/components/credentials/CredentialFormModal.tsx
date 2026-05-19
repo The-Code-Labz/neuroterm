@@ -11,6 +11,7 @@ interface CredentialFormModalProps {
 
 const empty: CreateCredentialPayload = {
   name: '',
+  host: '',
   username: '',
   auth_type: 'password',
   password: '',
@@ -20,13 +21,14 @@ const empty: CreateCredentialPayload = {
 
 export default function CredentialFormModal({ open, editTarget, onClose, onSaved }: CredentialFormModalProps): JSX.Element | null {
   const [form, setForm] = useState<CreateCredentialPayload>(empty);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy]   = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (editTarget) {
       setForm({
         name:        editTarget.name,
+        host:        editTarget.host ?? '',
         username:    editTarget.username,
         auth_type:   editTarget.auth_type,
         password:    '',
@@ -81,12 +83,17 @@ export default function CredentialFormModal({ open, editTarget, onClose, onSaved
               placeholder="My Server Root" required />
           </Field>
 
+          <Field label="Host / IP (optional — pre-fills when creating connections)">
+            <input value={form.host ?? ''} onChange={(e) => set('host', e.target.value)}
+              placeholder="192.168.1.1 or server.example.com" />
+          </Field>
+
           <Field label="Username" required>
             <input value={form.username} onChange={(e) => set('username', e.target.value)}
               placeholder="root" required />
           </Field>
 
-          {/* Auth type */}
+          {/* Auth type toggle */}
           <div className="flex gap-2">
             {(['password', 'private_key'] as const).map((a) => (
               <button key={a} type="button" onClick={() => set('auth_type', a)}

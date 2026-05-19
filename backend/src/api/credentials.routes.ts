@@ -8,6 +8,7 @@ type AuthType = 'password' | 'private_key';
 interface CredentialRow {
   id: string;
   name: string;
+  host: string | null;
   username: string;
   auth_type: AuthType;
   password_enc: string | null;
@@ -28,6 +29,7 @@ function safeResponse(row: CredentialRow) {
   return {
     id:              row.id,
     name:            row.name,
+    host:            row.host ?? null,
     username:        row.username,
     auth_type:       row.auth_type,
     has_password:    Boolean(row.password_enc),
@@ -44,7 +46,7 @@ export function credentialsRouter(db: AppDatabase, cryptoService: CryptoService)
   // GET /api/credentials
   router.get('/', (_req, res) => {
     const rows = db.prepare(`
-      SELECT id, name, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at
+      SELECT id, name, host, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at
       FROM credentials ORDER BY name ASC
     `).all() as CredentialRow[];
     res.json(rows.map(safeResponse));
@@ -53,7 +55,7 @@ export function credentialsRouter(db: AppDatabase, cryptoService: CryptoService)
   // GET /api/credentials/:id
   router.get('/:id', (req, res) => {
     const row = db.prepare(`
-      SELECT id, name, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at
+      SELECT id, name, host, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at
       FROM credentials WHERE id = ?
     `).get(req.params.id) as CredentialRow | undefined;
     if (!row) { res.status(404).json({ error: 'Not found' }); return; }
@@ -62,7 +64,7 @@ export function credentialsRouter(db: AppDatabase, cryptoService: CryptoService)
 
   // POST /api/credentials
   router.post('/', (req, res) => {
-    const { name, username, auth_type, password, private_key, passphrase } =
+    const { name, host, username, auth_type, password, private_key, passphrase } =
       req.body as Record<string, string>;
 
     if (!name?.trim())     { res.status(400).json({ error: 'name is required' }); return; }
@@ -75,17 +77,17 @@ export function credentialsRouter(db: AppDatabase, cryptoService: CryptoService)
     const ts = now();
 
     db.prepare(`
-      INSERT INTO credentials (id, name, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO credentials (id, name, host, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      id, name.trim(), username.trim(), auth_type,
+      id, name.trim(), host?.trim() || null, username.trim(), auth_type,
       cryptoService.encrypt(password),
       cryptoService.encrypt(private_key),
       cryptoService.encrypt(passphrase),
       ts, ts
     );
 
-    res.status(201).json({ id, name: name.trim(), username: username.trim(), auth_type, created_at: ts, updated_at: ts });
+    res.status(201).json({ id, name: name.trim(), host: host?.trim() || null, username: username.trim(), auth_type, created_at: ts, updated_at: ts });
   });
 
   // PATCH /api/credentials/:id
@@ -93,18 +95,19 @@ export function credentialsRouter(db: AppDatabase, cryptoService: CryptoService)
     const existing = db.prepare(`SELECT * FROM credentials WHERE id = ?`).get(req.params.id) as CredentialRow | undefined;
     if (!existing) { res.status(404).json({ error: 'Not found' }); return; }
 
-    const { name, username, auth_type, password, private_key, passphrase } =
+    const { name, host, username, auth_type, password, private_key, passphrase } =
       req.body as Record<string, string>;
     const ts = now();
 
     db.prepare(`
       UPDATE credentials SET
-        name = ?, username = ?, auth_type = ?,
+        name = ?, host = ?, username = ?, auth_type = ?,
         password_enc = ?, private_key_enc = ?, passphrase_enc = ?,
         updated_at = ?
       WHERE id = ?
     `).run(
       name     ?? existing.name,
+      host !== undefined ? (host.trim() || null) : existing.host,
       username ?? existing.username,
       (auth_type && isAuthType(auth_type)) ? auth_type : existing.auth_type,
       password    ? cryptoService.encrypt(password)    : existing.password_enc,
