@@ -10,8 +10,10 @@ services:
       - DB_PATH=/data/neuroterm.sqlite
       - NEUROTERM_AUTH_TOKEN=${NEUROTERM_AUTH_TOKEN}
       - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY}
+      - JWT_SECRET=${JWT_SECRET}
       - DEFAULT_TMUX_SESSION=${DEFAULT_TMUX_SESSION:-neuroterm}
       - WORKSPACE_PATH=/workspace
+      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-false}
     volumes:
       - neuroterm_data:/data
       - neuroterm_home:/root
@@ -26,8 +28,6 @@ services:
         - VITE_AUTH_TOKEN=${NEUROTERM_AUTH_TOKEN}
     container_name: neuroterm-frontend
     restart: unless-stopped
-    environment:
-      - NEUROTERM_AUTH_TOKEN=${NEUROTERM_AUTH_TOKEN}
     ports:
       - "${NEUROTERM_PORT:-3000}:3000"
     depends_on:
