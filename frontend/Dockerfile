@@ -2,10 +2,6 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Declare build arg so Vite can see it at build time
-ARG VITE_AUTH_TOKEN
-ENV VITE_AUTH_TOKEN=${VITE_AUTH_TOKEN}
-
 COPY package*.json ./
 RUN npm ci
 
