@@ -1,7 +1,7 @@
 // ── Auth token resolution ─────────────────────────────────────────────────────
-// JWT from localStorage takes priority; falls back to build-time static token
+// JWT from localStorage — set by login flow (useAuth hook)
 function getToken(): string {
-  return localStorage.getItem('neuroterm_jwt') ?? import.meta.env.VITE_AUTH_TOKEN ?? '';
+  return localStorage.getItem('neuroterm_jwt') ?? ''
 }
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -138,9 +138,9 @@ export const api = {
   },
 
   sessions: {
-    list:   ()                      => req<ApiSession[]>('GET', '/api/sessions'),
-    tmux:   ()                      => req<TmuxSessionInfo[]>('GET', '/api/sessions/tmux'),
+    list:   ()                        => req<ApiSession[]>('GET', '/api/sessions'),
+    tmux:   ()                        => req<TmuxSessionInfo[]>('GET', '/api/sessions/tmux'),
     create: (p: CreateSessionPayload) => req<ApiSession>('POST', '/api/sessions', p),
-    close:  (id: string)            => req<void>('POST', `/api/sessions/${id}/close`),
+    close:  (id: string)              => req<void>('POST', `/api/sessions/${id}/close`),
   },
 };
