@@ -8,3 +8,4 @@ data/
 workspace/
 .DS_Store
 *.log
+*.tsbuildinfo
