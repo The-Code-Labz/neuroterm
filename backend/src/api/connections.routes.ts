@@ -12,7 +12,7 @@ export function connectionsRouter(db: AppDatabase, cryptoService: CryptoService)
   // GET /api/connections
   router.get('/', (_req, res) => {
     const rows = db.prepare(`
-      SELECT id, name, host, port, username, auth_type, tmux_session, mode, created_at, updated_at
+      SELECT id, name, host, port, username, auth_type, tmux_session, mode, credential_id, created_at, updated_at
       FROM connections ORDER BY name ASC
     `).all();
     res.json(rows);
@@ -21,7 +21,7 @@ export function connectionsRouter(db: AppDatabase, cryptoService: CryptoService)
   // GET /api/connections/:id
   router.get('/:id', (req, res) => {
     const row = db.prepare(`
-      SELECT id, name, host, port, username, auth_type, tmux_session, mode, created_at, updated_at
+      SELECT id, name, host, port, username, auth_type, tmux_session, mode, credential_id, created_at, updated_at
       FROM connections WHERE id = ?
     `).get(req.params.id);
     if (!row) { res.status(404).json({ error: 'Not found' }); return; }
@@ -30,7 +30,12 @@ export function connectionsRouter(db: AppDatabase, cryptoService: CryptoService)
 
   // POST /api/connections
   router.post('/', (req, res) => {
-    const { name, host, port = 22, username, auth_type, password, private_key, passphrase, tmux_session = 'neuroterm', mode = 'ssh' } = req.body as Record<string, string>;
+    const {
+      name, host, port = 22, username, auth_type,
+      password, private_key, passphrase,
+      credential_id,
+      tmux_session = 'neuroterm', mode = 'ssh',
+    } = req.body as Record<string, string>;
 
     if (!name || !host || !username || !auth_type) {
       res.status(400).json({ error: 'name, host, username, auth_type are required' });
@@ -41,17 +46,18 @@ export function connectionsRouter(db: AppDatabase, cryptoService: CryptoService)
     const ts = now();
 
     db.prepare(`
-      INSERT INTO connections (id, name, host, port, username, auth_type, password_enc, private_key_enc, passphrase_enc, tmux_session, mode, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO connections (id, name, host, port, username, auth_type, password_enc, private_key_enc, passphrase_enc, credential_id, tmux_session, mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, name, host, Number(port), username, auth_type,
       cryptoService.encrypt(password),
       cryptoService.encrypt(private_key),
       cryptoService.encrypt(passphrase),
+      credential_id || null,
       tmux_session, mode, ts, ts
     );
 
-    res.status(201).json({ id, name, host, port: Number(port), username, auth_type, tmux_session, mode, created_at: ts, updated_at: ts });
+    res.status(201).json({ id, name, host, port: Number(port), username, auth_type, credential_id: credential_id || null, tmux_session, mode, created_at: ts, updated_at: ts });
   });
 
   // PATCH /api/connections/:id
@@ -59,24 +65,37 @@ export function connectionsRouter(db: AppDatabase, cryptoService: CryptoService)
     const existing = db.prepare(`SELECT * FROM connections WHERE id = ?`).get(req.params.id) as Record<string, unknown> | undefined;
     if (!existing) { res.status(404).json({ error: 'Not found' }); return; }
 
-    const { name, host, port, username, auth_type, password, private_key, passphrase, tmux_session, mode } = req.body as Record<string, string>;
+    const {
+      name, host, port, username, auth_type,
+      password, private_key, passphrase,
+      credential_id,
+      tmux_session, mode,
+    } = req.body as Record<string, string>;
+
     const ts = now();
+
+    // credential_id: explicit null clears it, undefined keeps existing
+    const newCredentialId = Object.prototype.hasOwnProperty.call(req.body, 'credential_id')
+      ? (credential_id || null)
+      : existing['credential_id'];
 
     db.prepare(`
       UPDATE connections SET
         name = ?, host = ?, port = ?, username = ?, auth_type = ?,
         password_enc = ?, private_key_enc = ?, passphrase_enc = ?,
+        credential_id = ?,
         tmux_session = ?, mode = ?, updated_at = ?
       WHERE id = ?
     `).run(
-      name      ?? existing['name'],
-      host      ?? existing['host'],
-      port      ? Number(port) : existing['port'],
-      username  ?? existing['username'],
-      auth_type ?? existing['auth_type'],
-      password     ? cryptoService.encrypt(password)     : existing['password_enc'],
-      private_key  ? cryptoService.encrypt(private_key)  : existing['private_key_enc'],
-      passphrase   ? cryptoService.encrypt(passphrase)   : existing['passphrase_enc'],
+      name         ?? existing['name'],
+      host         ?? existing['host'],
+      port         ? Number(port) : existing['port'],
+      username     ?? existing['username'],
+      auth_type    ?? existing['auth_type'],
+      password     ? cryptoService.encrypt(password)    : existing['password_enc'],
+      private_key  ? cryptoService.encrypt(private_key) : existing['private_key_enc'],
+      passphrase   ? cryptoService.encrypt(passphrase)  : existing['passphrase_enc'],
+      newCredentialId,
       tmux_session ?? existing['tmux_session'],
       mode         ?? existing['mode'],
       ts, req.params.id
