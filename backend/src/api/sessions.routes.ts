@@ -1,9 +1,13 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import type { AppDatabase } from '../db/sqlite';
-import type { TmuxService } from '../services/tmux-service';
+import { TmuxService, isValidTmuxSessionName } from '../services/tmux-service';
 
-export function sessionsRouter(db: AppDatabase, tmux: TmuxService): Router {
+export function sessionsRouter(
+  db: AppDatabase,
+  tmux: TmuxService,
+  closeRuntimeSession: (id: string) => void
+): Router {
   const router = Router();
   const makeId = () => crypto.randomUUID();
   const now    = () => new Date().toISOString();
@@ -25,6 +29,11 @@ export function sessionsRouter(db: AppDatabase, tmux: TmuxService): Router {
 
     if (!tmux_session || !name) {
       res.status(400).json({ error: 'tmux_session and name are required' });
+      return;
+    }
+
+    if (!isValidTmuxSessionName(tmux_session)) {
+      res.status(400).json({ error: 'tmux_session must match ^[a-zA-Z0-9_-]{1,128}$' });
       return;
     }
 
@@ -58,6 +67,7 @@ export function sessionsRouter(db: AppDatabase, tmux: TmuxService): Router {
       UPDATE terminal_sessions SET status = 'closed', closed_at = ?, updated_at = ? WHERE id = ?
     `).run(ts, ts, req.params.id);
     if (result.changes === 0) { res.status(404).json({ error: 'Not found' }); return; }
+    closeRuntimeSession(req.params.id);
     res.json({ id: req.params.id, status: 'closed' });
   });
 
@@ -65,6 +75,7 @@ export function sessionsRouter(db: AppDatabase, tmux: TmuxService): Router {
   router.delete('/:id', (req, res) => {
     const result = db.prepare(`DELETE FROM terminal_sessions WHERE id = ?`).run(req.params.id);
     if (result.changes === 0) { res.status(404).json({ error: 'Not found' }); return; }
+    closeRuntimeSession(req.params.id);
     res.status(204).send();
   });
 

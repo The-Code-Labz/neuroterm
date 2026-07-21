@@ -8,7 +8,7 @@ import { connectionsRouter } from './api/connections.routes';
 import { sessionsRouter } from './api/sessions.routes';
 import { credentialsRouter } from './api/credentials.routes';
 import { authRouter } from './api/auth.routes';
-import { handleTerminalWs } from './ws/terminal-ws';
+import { handleTerminalWs, closeSession } from './ws/terminal-ws';
 import { authMiddleware, isAuthorizedRequest } from './middleware/auth';
 
 const PORT = Number(process.env.PORT) || 3001;
@@ -40,7 +40,7 @@ app.use('/api/auth', authRouter(db));
 // Protected routes — static token OR valid JWT
 app.use('/api/credentials', authMiddleware, credentialsRouter(db, crypto));
 app.use('/api/connections', authMiddleware, connectionsRouter(db, crypto));
-app.use('/api/sessions',    authMiddleware, sessionsRouter(db, tmux));
+app.use('/api/sessions',    authMiddleware, sessionsRouter(db, tmux, closeSession));
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 

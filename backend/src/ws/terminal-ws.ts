@@ -4,7 +4,7 @@ import type { WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import type { AppDatabase } from '../db/sqlite';
 import type { CryptoService } from '../services/crypto-service';
-import { TmuxService } from '../services/tmux-service';
+import { TmuxService, isValidTmuxSessionName } from '../services/tmux-service';
 
 // ─── Wire protocol ────────────────────────────────────────────────────────────
 
@@ -28,6 +28,18 @@ interface RuntimeSession {
 }
 
 const activeSessions = new Map<string, RuntimeSession>();
+
+/**
+ * Terminate the live runtime (PTY / SSH stream) backing a session, if one is
+ * currently attached. Safe to call for a session with no live runtime (e.g.
+ * created but never connected) — it's just a no-op in that case.
+ */
+export function closeSession(sessionId: string): void {
+  const runtime = activeSessions.get(sessionId);
+  if (!runtime) return;
+  try { runtime.cleanup(); } catch { /* ignore */ }
+  activeSessions.delete(sessionId);
+}
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
 
@@ -61,6 +73,16 @@ export function handleTerminalWs(
   const tmuxSession = session['tmux_session'] as string;
   const cols        = (session['cols'] as number) || 220;
   const rows        = (session['rows'] as number) || 50;
+
+  // Defense in depth — tmux_session is validated at the API boundary
+  // (POST /api/sessions), but this value also gets interpolated into a
+  // remote shell command for SSH mode, so re-validate here too rather than
+  // trust that every write path enforces the same rule.
+  if (!isValidTmuxSessionName(tmuxSession)) {
+    send(ws, { type: 'error', code: 'INVALID_SESSION_NAME', message: 'Session has an invalid tmux session name' });
+    ws.close();
+    return;
+  }
 
   // Mark last connected
   db.prepare(`UPDATE terminal_sessions SET last_connected_at = ?, updated_at = ? WHERE id = ?`)
@@ -156,6 +178,7 @@ function spawnLocalTmux(opts: LocalOpts): void {
   ptyProcess.onExit(() => {
     send(ws, { type: 'closed', reason: 'process_exit' });
     clearInterval(pingInterval);
+    activeSessions.delete(opts.sessionId);
     ws.close();
   });
 
@@ -177,6 +200,7 @@ function spawnLocalTmux(opts: LocalOpts): void {
 
   ws.on('close', () => {
     clearInterval(pingInterval);
+    activeSessions.delete(opts.sessionId);
     try { ptyProcess.kill(); } catch { /* already gone */ }
   });
 
@@ -249,8 +273,11 @@ function spawnSshTmux(opts: SshOpts): void {
         return;
       }
 
-      // Bootstrap tmux on remote — attach if exists, create if not
-      const tmuxCmd = `tmux new-session -A -s ${JSON.stringify(tmuxSession)}\r`;
+      // Bootstrap tmux on remote — attach if exists, create if not.
+      // tmuxSession is validated by isValidTmuxSessionName() above
+      // ([a-zA-Z0-9_-] only), so it's safe to interpolate directly —
+      // no quoting/escaping could smuggle shell metacharacters through it.
+      const tmuxCmd = `tmux new-session -A -s ${tmuxSession}\r`;
       stream.write(tmuxCmd);
 
       send(ws, { type: 'status', status: 'tmux_ready', tmuxSession });
@@ -267,6 +294,7 @@ function spawnSshTmux(opts: SshOpts): void {
       stream.on('close', () => {
         send(ws, { type: 'closed', reason: 'stream_close' });
         clearInterval(pingInterval);
+        activeSessions.delete(opts.sessionId);
         sshClient.end();
         ws.close();
       });
@@ -287,6 +315,7 @@ function spawnSshTmux(opts: SshOpts): void {
 
       ws.on('close', () => {
         clearInterval(pingInterval);
+        activeSessions.delete(opts.sessionId);
         try { stream.close(); } catch { /* ignore */ }
         try { sshClient.end(); } catch { /* ignore */ }
       });
