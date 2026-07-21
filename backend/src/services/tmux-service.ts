@@ -1,9 +1,19 @@
-import { execSync, spawn } from 'child_process';
+import { execFileSync } from 'child_process';
 
 export interface TmuxSession {
   name: string;
   windows: number;
   created: string;
+}
+
+// tmux session names are used as literal -t/-s args to execFileSync (no shell
+// involved, so no injection risk there) but are also interpolated into a
+// remote command string over SSH (see ws/terminal-ws.ts) — so we still
+// validate the character set at the boundary as defense in depth.
+const VALID_SESSION_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
+
+export function isValidTmuxSessionName(name: unknown): name is string {
+  return typeof name === 'string' && VALID_SESSION_NAME.test(name);
 }
 
 export class TmuxService {
@@ -12,7 +22,7 @@ export class TmuxService {
    */
   public sessionExists(name: string): boolean {
     try {
-      execSync(`tmux has-session -t ${JSON.stringify(name)} 2>/dev/null`, { stdio: 'ignore' });
+      execFileSync('tmux', ['has-session', '-t', name], { stdio: 'ignore' });
       return true;
     } catch {
       return false;
@@ -24,8 +34,9 @@ export class TmuxService {
    */
   public createSession(name: string, cols = 220, rows = 50): void {
     if (this.sessionExists(name)) return;
-    execSync(
-      `tmux new-session -d -s ${JSON.stringify(name)} -x ${cols} -y ${rows}`,
+    execFileSync(
+      'tmux',
+      ['new-session', '-d', '-s', name, '-x', String(cols), '-y', String(rows)],
       { stdio: 'ignore' }
     );
   }
@@ -35,8 +46,9 @@ export class TmuxService {
    */
   public listSessions(): TmuxSession[] {
     try {
-      const output = execSync(
-        `tmux list-sessions -F '#{session_name}|#{session_windows}|#{session_created}'`,
+      const output = execFileSync(
+        'tmux',
+        ['list-sessions', '-F', '#{session_name}|#{session_windows}|#{session_created}'],
         { encoding: 'utf8' }
       ).trim();
 
@@ -56,7 +68,7 @@ export class TmuxService {
    */
   public killSession(name: string): void {
     try {
-      execSync(`tmux kill-session -t ${JSON.stringify(name)}`, { stdio: 'ignore' });
+      execFileSync('tmux', ['kill-session', '-t', name], { stdio: 'ignore' });
     } catch {
       // already gone
     }

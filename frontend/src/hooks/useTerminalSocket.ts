@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import type { Terminal } from '@xterm/xterm';
 
-const TOKEN = import.meta.env.VITE_AUTH_TOKEN ?? '';
+const JWT_KEY = 'neuroterm_jwt';
 const PING_INTERVAL_MS    = 25_000;
 const RECONNECT_DELAY_MS  = 2_000;
 const MAX_RECONNECTS      = 20;
@@ -37,7 +37,8 @@ export function useTerminalSocket({
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${protocol}://${window.location.host}/ws/terminal/${sessionId}?token=${encodeURIComponent(TOKEN)}`;
+    const token = localStorage.getItem(JWT_KEY) ?? '';
+    const url = `${protocol}://${window.location.host}/ws/terminal/${sessionId}?token=${encodeURIComponent(token)}`;
 
     const ws = new WebSocket(url);
     wsRef.current = ws;

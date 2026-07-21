@@ -2,6 +2,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import type { AppDatabase } from '../db/sqlite';
 import type { CryptoService } from '../services/crypto-service';
+import { isValidTmuxSessionName } from '../services/tmux-service';
 
 export function connectionsRouter(db: AppDatabase, cryptoService: CryptoService): Router {
   const router = Router();
@@ -42,6 +43,11 @@ export function connectionsRouter(db: AppDatabase, cryptoService: CryptoService)
       return;
     }
 
+    if (!isValidTmuxSessionName(tmux_session)) {
+      res.status(400).json({ error: 'tmux_session must match ^[a-zA-Z0-9_-]{1,128}$' });
+      return;
+    }
+
     const id = makeId();
     const ts = now();
 
@@ -71,6 +77,11 @@ export function connectionsRouter(db: AppDatabase, cryptoService: CryptoService)
       credential_id,
       tmux_session, mode,
     } = req.body as Record<string, string>;
+
+    if (tmux_session !== undefined && !isValidTmuxSessionName(tmux_session)) {
+      res.status(400).json({ error: 'tmux_session must match ^[a-zA-Z0-9_-]{1,128}$' });
+      return;
+    }
 
     const ts = now();
 
