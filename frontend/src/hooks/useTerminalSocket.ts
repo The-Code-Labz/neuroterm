@@ -38,9 +38,14 @@ export function useTerminalSocket({
 
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const token = localStorage.getItem(JWT_KEY) ?? '';
-    const url = `${protocol}://${window.location.host}/ws/terminal/${sessionId}?token=${encodeURIComponent(token)}`;
+    const url = `${protocol}://${window.location.host}/ws/terminal/${sessionId}`;
 
-    const ws = new WebSocket(url);
+    // Send the auth token via the Sec-WebSocket-Protocol subprotocol instead
+    // of a `?token=` query string — the browser WebSocket API can't set
+    // custom headers on the handshake, and query strings routinely end up
+    // in proxy/access logs and browser history. This keeps the token out of
+    // the request URI entirely.
+    const ws = new WebSocket(url, [`neuroterm-auth.${token}`]);
     wsRef.current = ws;
 
     ws.onopen = () => {

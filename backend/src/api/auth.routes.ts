@@ -3,6 +3,17 @@ import crypto from 'crypto';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import type { AppDatabase } from '../db/sqlite';
+import { rateLimit } from '../middleware/rate-limit';
+
+const JWT_ALGORITHM = 'HS256' as const;
+
+// 10 attempts / 5 minutes / IP on each of register and login — independent
+// windows so a burst on one doesn't lock out the other.
+const authRateLimit = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 10,
+  message: 'Too many authentication attempts. Please wait before trying again.',
+});
 
 interface UserRow {
   id: string;
@@ -26,7 +37,7 @@ function signToken(user: Pick<UserRow, 'id' | 'username' | 'role'>): string {
   return jwt.sign(
     { sub: user.id, username: user.username, role: user.role },
     jwtSecret(),
-    { expiresIn: '7d' }
+    { expiresIn: '7d', algorithm: JWT_ALGORITHM }
   );
 }
 
@@ -39,7 +50,7 @@ export function authRouter(db: AppDatabase): Router {
 
   // POST /api/auth/register
   // Only works if no users exist OR ALLOW_REGISTRATION=true
-  router.post('/register', async (req, res) => {
+  router.post('/register', authRateLimit, async (req, res) => {
     const { username, password } = req.body as Record<string, string>;
 
     if (!username?.trim() || !password) {
@@ -78,7 +89,7 @@ export function authRouter(db: AppDatabase): Router {
   });
 
   // POST /api/auth/login
-  router.post('/login', async (req, res) => {
+  router.post('/login', authRateLimit, async (req, res) => {
     const { username, password } = req.body as Record<string, string>;
 
     if (!username?.trim() || !password) {
@@ -112,7 +123,7 @@ export function authRouter(db: AppDatabase): Router {
     if (!match) { res.status(401).json({ error: 'Unauthorized' }); return; }
 
     try {
-      const payload = jwt.verify(match[1], jwtSecret()) as { sub: string };
+      const payload = jwt.verify(match[1], jwtSecret(), { algorithms: [JWT_ALGORITHM] }) as { sub: string };
       const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(payload.sub) as UserRow | undefined;
       if (!user) { res.status(401).json({ error: 'User not found' }); return; }
       res.json(safeUser(user));
