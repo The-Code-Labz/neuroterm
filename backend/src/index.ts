@@ -9,9 +9,11 @@ import { sessionsRouter } from './api/sessions.routes';
 import { credentialsRouter } from './api/credentials.routes';
 import { authRouter } from './api/auth.routes';
 import { handleTerminalWs, closeSession } from './ws/terminal-ws';
-import { authMiddleware, isAuthorizedRequest } from './middleware/auth';
+import { authMiddleware, isAuthorizedRequest, selectWsProtocol, warnIfJwtSecretFallback } from './middleware/auth';
 
 const PORT = Number(process.env.PORT) || 3001;
+
+warnIfJwtSecretFallback();
 
 // ── Bootstrap services ────────────────────────────────────────────────────────
 const db     = openDatabase();
@@ -47,7 +49,10 @@ app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 // ── HTTP + WebSocket server ───────────────────────────────────────────────────
 const httpServer = createServer(app);
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({
+  noServer: true,
+  handleProtocols: (protocols) => selectWsProtocol(protocols),
+});
 
 wss.on('connection', (ws, req) => {
   handleTerminalWs(ws, req, { db, crypto, tmux });
