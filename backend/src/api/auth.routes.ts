@@ -50,68 +50,76 @@ export function authRouter(db: AppDatabase): Router {
 
   // POST /api/auth/register
   // Only works if no users exist OR ALLOW_REGISTRATION=true
-  router.post('/register', authRateLimit, async (req, res) => {
-    const { username, password } = req.body as Record<string, string>;
+  router.post('/register', authRateLimit, async (req, res, next) => {
+    try {
+      const { username, password } = req.body as Record<string, string>;
 
-    if (!username?.trim() || !password) {
-      res.status(400).json({ error: 'username and password are required' });
-      return;
+      if (!username?.trim() || !password) {
+        res.status(400).json({ error: 'username and password are required' });
+        return;
+      }
+
+      const userCount = (db.prepare(`SELECT COUNT(*) as count FROM users`).get() as { count: number }).count;
+      const allowReg  = process.env.ALLOW_REGISTRATION === 'true';
+
+      if (userCount > 0 && !allowReg) {
+        res.status(403).json({ error: 'Registration is disabled. Set ALLOW_REGISTRATION=true to enable.' });
+        return;
+      }
+
+      const existing = db.prepare(`SELECT id FROM users WHERE username = ?`).get(username.trim());
+      if (existing) {
+        res.status(409).json({ error: 'Username already taken' });
+        return;
+      }
+
+      const password_hash = await bcrypt.hash(password, 12);
+      const id   = makeId();
+      const ts   = now();
+      const role: 'admin' | 'user' = userCount === 0 ? 'admin' : 'user';
+
+      db.prepare(`
+        INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(id, username.trim(), password_hash, role, ts, ts);
+
+      const user = { id, username: username.trim(), role };
+      const token = signToken(user);
+
+      res.status(201).json({ token, user: { ...user, created_at: ts } });
+    } catch (err) {
+      next(err);
     }
-
-    const userCount = (db.prepare(`SELECT COUNT(*) as count FROM users`).get() as { count: number }).count;
-    const allowReg  = process.env.ALLOW_REGISTRATION === 'true';
-
-    if (userCount > 0 && !allowReg) {
-      res.status(403).json({ error: 'Registration is disabled. Set ALLOW_REGISTRATION=true to enable.' });
-      return;
-    }
-
-    const existing = db.prepare(`SELECT id FROM users WHERE username = ?`).get(username.trim());
-    if (existing) {
-      res.status(409).json({ error: 'Username already taken' });
-      return;
-    }
-
-    const password_hash = await bcrypt.hash(password, 12);
-    const id   = makeId();
-    const ts   = now();
-    const role: 'admin' | 'user' = userCount === 0 ? 'admin' : 'user';
-
-    db.prepare(`
-      INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, username.trim(), password_hash, role, ts, ts);
-
-    const user = { id, username: username.trim(), role };
-    const token = signToken(user);
-
-    res.status(201).json({ token, user: { ...user, created_at: ts } });
   });
 
   // POST /api/auth/login
-  router.post('/login', authRateLimit, async (req, res) => {
-    const { username, password } = req.body as Record<string, string>;
+  router.post('/login', authRateLimit, async (req, res, next) => {
+    try {
+      const { username, password } = req.body as Record<string, string>;
 
-    if (!username?.trim() || !password) {
-      res.status(400).json({ error: 'username and password are required' });
-      return;
+      if (!username?.trim() || !password) {
+        res.status(400).json({ error: 'username and password are required' });
+        return;
+      }
+
+      const user = db.prepare(`SELECT * FROM users WHERE username = ?`).get(username.trim()) as UserRow | undefined;
+
+      if (!user) {
+        res.status(401).json({ error: 'Invalid username or password' });
+        return;
+      }
+
+      const valid = await bcrypt.compare(password, user.password_hash);
+      if (!valid) {
+        res.status(401).json({ error: 'Invalid username or password' });
+        return;
+      }
+
+      const token = signToken(user);
+      res.json({ token, user: safeUser(user) });
+    } catch (err) {
+      next(err);
     }
-
-    const user = db.prepare(`SELECT * FROM users WHERE username = ?`).get(username.trim()) as UserRow | undefined;
-
-    if (!user) {
-      res.status(401).json({ error: 'Invalid username or password' });
-      return;
-    }
-
-    const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) {
-      res.status(401).json({ error: 'Invalid username or password' });
-      return;
-    }
-
-    const token = signToken(user);
-    res.json({ token, user: safeUser(user) });
   });
 
   // GET /api/auth/me

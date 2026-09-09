@@ -1,4 +1,5 @@
 import express from 'express';
+import helmet from 'helmet';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import { openDatabase } from './db/sqlite';
@@ -9,7 +10,8 @@ import { sessionsRouter } from './api/sessions.routes';
 import { credentialsRouter } from './api/credentials.routes';
 import { authRouter } from './api/auth.routes';
 import { handleTerminalWs, closeSession } from './ws/terminal-ws';
-import { authMiddleware, isAuthorizedRequest, selectWsProtocol, warnIfJwtSecretFallback } from './middleware/auth';
+import { createAuthMiddleware, resolveWsAuthContext, selectWsProtocol, warnIfJwtSecretFallback } from './middleware/auth';
+import { rateLimit } from './middleware/rate-limit';
 
 const PORT = Number(process.env.PORT) || 3001;
 
@@ -26,6 +28,22 @@ tmux.createSession(process.env.DEFAULT_TMUX_SESSION || 'neuroterm');
 // ── Express ───────────────────────────────────────────────────────────────────
 const app = express();
 
+// The documented deployment (docker-compose.yml + frontend/nginx.conf) always
+// puts exactly one reverse proxy (the frontend nginx container) in front of
+// this service. Without `trust proxy`, Express's `req.ip` resolves to that
+// proxy's container IP for every request — meaning the per-IP auth rate
+// limiter (see rate-limit.ts / auth.routes.ts) would bucket ALL clients
+// together under one shared limit instead of limiting each client
+// independently. `1` = trust exactly one hop (the immediate proxy), reading
+// the real client IP from the first entry of X-Forwarded-For it sets.
+app.set('trust proxy', 1);
+
+// CSP disabled: the frontend is a separately-built static SPA served by
+// nginx, not rendered by this process, so a same-origin CSP here would have
+// no visibility into its actual script/style sources and risks breaking it
+// for no benefit. The other helmet defaults (X-Content-Type-Options,
+// X-Frame-Options, HSTS when TLS-terminated, etc.) still apply.
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '2mb' }));
 
 app.use((req, _res, next) => {
@@ -39,12 +57,27 @@ app.get('/api/health', (_req, res) => {
 });
 app.use('/api/auth', authRouter(db));
 
-// Protected routes — static token OR valid JWT
-app.use('/api/credentials', authMiddleware, credentialsRouter(db, crypto));
-app.use('/api/connections', authMiddleware, connectionsRouter(db, crypto));
-app.use('/api/sessions',    authMiddleware, sessionsRouter(db, tmux, closeSession));
+// Protected routes — static token OR valid JWT. Ownership scoping happens
+// per-route based on req.auth (see middleware/auth.ts).
+const authMiddleware = createAuthMiddleware(db);
+const crudRateLimit  = rateLimit({ windowMs: 60_000, max: 300, message: 'Too many requests, please slow down.' });
+
+app.use('/api/credentials', authMiddleware, crudRateLimit, credentialsRouter(db, crypto));
+app.use('/api/connections', authMiddleware, crudRateLimit, connectionsRouter(db, crypto));
+app.use('/api/sessions',    authMiddleware, crudRateLimit, sessionsRouter(db, tmux, closeSession));
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
+
+// Centralized error handler — catches anything a route handler throws
+// synchronously (or passes to `next(err)`) instead of falling through to
+// Express's default HTML error page, keeping the API's `{ error }` JSON
+// contract consistent everywhere.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[unhandled]', err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'Internal server error' });
+});
 
 // ── HTTP + WebSocket server ───────────────────────────────────────────────────
 const httpServer = createServer(app);
@@ -54,24 +87,21 @@ const wss = new WebSocketServer({
   handleProtocols: (protocols) => selectWsProtocol(protocols),
 });
 
-wss.on('connection', (ws, req) => {
-  handleTerminalWs(ws, req, { db, crypto, tmux });
-});
-
 httpServer.on('upgrade', (req, socket, head) => {
   if (!req.url?.startsWith('/ws/terminal/')) {
     socket.destroy();
     return;
   }
 
-  if (!isAuthorizedRequest(req)) {
+  const auth = resolveWsAuthContext(req, db);
+  if (!auth) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
     return;
   }
 
   wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit('connection', ws, req);
+    handleTerminalWs(ws, req, { db, crypto, tmux, auth });
   });
 });
 
