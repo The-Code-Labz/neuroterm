@@ -5,6 +5,7 @@ import type { IncomingMessage } from 'http';
 import type { AppDatabase } from '../db/sqlite';
 import type { CryptoService } from '../services/crypto-service';
 import { TmuxService, isValidTmuxSessionName } from '../services/tmux-service';
+import { canAccessOwner, type AuthContext } from '../middleware/auth';
 
 // ─── Wire protocol ────────────────────────────────────────────────────────────
 
@@ -47,6 +48,7 @@ export interface TerminalWsOptions {
   db: AppDatabase;
   crypto: CryptoService;
   tmux: TmuxService;
+  auth: AuthContext;
 }
 
 export function handleTerminalWs(
@@ -56,14 +58,14 @@ export function handleTerminalWs(
 ): void {
   const url       = new URL(req.url || '/', 'http://localhost');
   const sessionId = url.pathname.split('/').pop() || '';
-  const { db, crypto, tmux } = opts;
+  const { db, crypto, tmux, auth } = opts;
 
   // ── Load session row ──────────────────────────────────────────────────────
   const session = db.prepare(
     `SELECT * FROM terminal_sessions WHERE id = ? AND status = 'active'`
   ).get(sessionId) as Record<string, unknown> | undefined;
 
-  if (!session) {
+  if (!session || !canAccessOwner(auth, session['user_id'] as string | null)) {
     send(ws, { type: 'error', code: 'SESSION_NOT_FOUND', message: 'Session not found or closed' });
     ws.close();
     return;
@@ -104,7 +106,10 @@ export function handleTerminalWs(
       `SELECT * FROM connections WHERE id = ?`
     ).get(session['connection_id'] as string) as Record<string, unknown> | undefined;
 
-    if (!connection) {
+    // Defense in depth — a session created against a connection the caller
+    // owns should never later point at a connection they don't, but don't
+    // trust that invariant blindly.
+    if (!connection || !canAccessOwner(auth, connection['user_id'] as string | null)) {
       send(ws, { type: 'error', code: 'CONNECTION_NOT_FOUND', message: 'SSH connection not found' });
       clearInterval(pingInterval);
       ws.close();
@@ -134,7 +139,7 @@ export function handleTerminalWs(
       }
     }
 
-    spawnSshTmux({ ws, crypto, tmux, connection: authRow, tmuxSession, cols, rows, sessionId, pingInterval });
+    spawnSshTmux({ ws, db, crypto, tmux, connection: authRow, tmuxSession, cols, rows, sessionId, pingInterval });
   }
 }
 
@@ -211,6 +216,7 @@ function spawnLocalTmux(opts: LocalOpts): void {
 
 interface SshOpts {
   ws: WebSocket;
+  db: AppDatabase;
   crypto: CryptoService;
   tmux: TmuxService;
   connection: Record<string, unknown>;
@@ -222,21 +228,49 @@ interface SshOpts {
 }
 
 function spawnSshTmux(opts: SshOpts): void {
-  const { ws, crypto, connection, tmuxSession, cols, rows, pingInterval } = opts;
+  const { ws, db, crypto, connection, tmuxSession, cols, rows, pingInterval } = opts;
 
   const sshClient = new SSHClient();
 
+  const connectionId = connection['id'] as string;
   const host     = connection['host'] as string;
   const port     = (connection['port'] as number) || 22;
   const username = connection['username'] as string;
   const authType = connection['auth_type'] as string;
+  const pinnedFingerprint = connection['host_key_fingerprint'] as string | null;
 
+  // TOFU (trust-on-first-use) host-key pinning: the server's key hash is
+  // pinned to this connection on first successful handshake. Any later
+  // handshake presenting a different key is refused outright — without this,
+  // ssh2 accepts any host key by default and every SSH session here is
+  // blind to MITM interception.
   const connectConfig: Parameters<SSHClient['connect']>[0] = {
     host,
     port,
     username,
     readyTimeout: 20_000,
     keepaliveInterval: 10_000,
+    hostHash: 'sha256',
+    hostVerifier: (hashedKey: string): boolean => {
+      if (!pinnedFingerprint) {
+        db.prepare(`UPDATE connections SET host_key_fingerprint = ? WHERE id = ?`).run(hashedKey, connectionId);
+        send(ws, {
+          type: 'output',
+          data: `\r\n\x1b[33m⚠ New host key for ${host}:${port} — pinned as SHA256:${hashedKey}\x1b[0m\r\n`,
+        });
+        return true;
+      }
+      if (hashedKey !== pinnedFingerprint) {
+        send(ws, {
+          type: 'error',
+          code: 'HOST_KEY_MISMATCH',
+          message: `Host key for ${host}:${port} does not match the pinned key — refusing to connect (possible MITM). ` +
+            `If this host was legitimately reprovisioned, clear its pinned key on the connection and reconnect.`,
+        });
+        return false;
+      }
+      return true;
+    },
   };
 
   if (authType === 'private_key') {

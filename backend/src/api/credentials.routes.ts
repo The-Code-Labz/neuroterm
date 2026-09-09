@@ -2,11 +2,13 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import type { AppDatabase } from '../db/sqlite';
 import type { CryptoService } from '../services/crypto-service';
+import { canAccessOwner, ownerIdFor } from '../middleware/auth';
 
 type AuthType = 'password' | 'private_key';
 
 interface CredentialRow {
   id: string;
+  user_id: string | null;
   name: string;
   host: string | null;
   username: string;
@@ -23,6 +25,24 @@ function now(): string { return new Date().toISOString(); }
 
 function isAuthType(v: unknown): v is AuthType {
   return v === 'password' || v === 'private_key';
+}
+
+// `password`/`private_key`/`passphrase` fields are "keep existing unless
+// explicitly provided" on PATCH. A present-but-empty-string value is treated
+// as "keep" too (matches the pre-existing contract), but an explicit `null`
+// clears the stored secret — previously there was no way to clear one via
+// the API at all.
+function resolveSecretUpdate(
+  body: Record<string, unknown>,
+  field: string,
+  cryptoService: CryptoService,
+  existing: string | null
+): string | null {
+  if (!Object.prototype.hasOwnProperty.call(body, field)) return existing;
+  const value = body[field];
+  if (value === null) return null;
+  if (typeof value === 'string' && value) return cryptoService.encrypt(value);
+  return existing;
 }
 
 function safeResponse(row: CredentialRow) {
@@ -44,21 +64,29 @@ export function credentialsRouter(db: AppDatabase, cryptoService: CryptoService)
   const router = Router();
 
   // GET /api/credentials
-  router.get('/', (_req, res) => {
-    const rows = db.prepare(`
-      SELECT id, name, host, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at
-      FROM credentials ORDER BY name ASC
-    `).all() as CredentialRow[];
+  router.get('/', (req, res) => {
+    const auth = req.auth!;
+    const rows = (
+      auth.role === 'admin'
+        ? db.prepare(`
+            SELECT id, user_id, name, host, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at
+            FROM credentials ORDER BY name ASC
+          `).all()
+        : db.prepare(`
+            SELECT id, user_id, name, host, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at
+            FROM credentials WHERE user_id = ? ORDER BY name ASC
+          `).all(auth.userId)
+    ) as CredentialRow[];
     res.json(rows.map(safeResponse));
   });
 
   // GET /api/credentials/:id
   router.get('/:id', (req, res) => {
     const row = db.prepare(`
-      SELECT id, name, host, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at
+      SELECT id, user_id, name, host, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at
       FROM credentials WHERE id = ?
     `).get(req.params.id) as CredentialRow | undefined;
-    if (!row) { res.status(404).json({ error: 'Not found' }); return; }
+    if (!row || !canAccessOwner(req.auth!, row.user_id)) { res.status(404).json({ error: 'Not found' }); return; }
     res.json(safeResponse(row));
   });
 
@@ -75,12 +103,13 @@ export function credentialsRouter(db: AppDatabase, cryptoService: CryptoService)
 
     const id = makeId();
     const ts = now();
+    const userId = ownerIdFor(req.auth!);
 
     db.prepare(`
-      INSERT INTO credentials (id, name, host, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO credentials (id, user_id, name, host, username, auth_type, password_enc, private_key_enc, passphrase_enc, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      id, name.trim(), host?.trim() || null, username.trim(), auth_type,
+      id, userId, name.trim(), host?.trim() || null, username.trim(), auth_type,
       cryptoService.encrypt(password),
       cryptoService.encrypt(private_key),
       cryptoService.encrypt(passphrase),
@@ -93,10 +122,17 @@ export function credentialsRouter(db: AppDatabase, cryptoService: CryptoService)
   // PATCH /api/credentials/:id
   router.patch('/:id', (req, res) => {
     const existing = db.prepare(`SELECT * FROM credentials WHERE id = ?`).get(req.params.id) as CredentialRow | undefined;
-    if (!existing) { res.status(404).json({ error: 'Not found' }); return; }
+    if (!existing || !canAccessOwner(req.auth!, existing.user_id)) { res.status(404).json({ error: 'Not found' }); return; }
 
-    const { name, host, username, auth_type, password, private_key, passphrase } =
-      req.body as Record<string, string>;
+    const body = req.body as Record<string, unknown>;
+    const { name, host, username, auth_type } = body as Record<string, string>;
+
+    if (name !== undefined && !name.trim())         { res.status(400).json({ error: 'name cannot be empty' }); return; }
+    if (username !== undefined && !username.trim()) { res.status(400).json({ error: 'username cannot be empty' }); return; }
+    if (auth_type !== undefined && !isAuthType(auth_type)) {
+      res.status(400).json({ error: 'auth_type must be password or private_key' }); return;
+    }
+
     const ts = now();
 
     db.prepare(`
@@ -106,13 +142,13 @@ export function credentialsRouter(db: AppDatabase, cryptoService: CryptoService)
         updated_at = ?
       WHERE id = ?
     `).run(
-      name     ?? existing.name,
+      name?.trim()     ?? existing.name,
       host !== undefined ? (host.trim() || null) : existing.host,
-      username ?? existing.username,
-      (auth_type && isAuthType(auth_type)) ? auth_type : existing.auth_type,
-      password    ? cryptoService.encrypt(password)    : existing.password_enc,
-      private_key ? cryptoService.encrypt(private_key) : existing.private_key_enc,
-      passphrase  ? cryptoService.encrypt(passphrase)  : existing.passphrase_enc,
+      username?.trim() ?? existing.username,
+      isAuthType(auth_type) ? auth_type : existing.auth_type,
+      resolveSecretUpdate(body, 'password', cryptoService, existing.password_enc),
+      resolveSecretUpdate(body, 'private_key', cryptoService, existing.private_key_enc),
+      resolveSecretUpdate(body, 'passphrase', cryptoService, existing.passphrase_enc),
       ts, req.params.id
     );
 
@@ -121,8 +157,12 @@ export function credentialsRouter(db: AppDatabase, cryptoService: CryptoService)
 
   // DELETE /api/credentials/:id
   router.delete('/:id', (req, res) => {
-    const result = db.prepare(`DELETE FROM credentials WHERE id = ?`).run(req.params.id);
-    if (result.changes === 0) { res.status(404).json({ error: 'Not found' }); return; }
+    const existing = db.prepare(`SELECT id, user_id FROM credentials WHERE id = ?`).get(req.params.id) as
+      | { id: string; user_id: string | null }
+      | undefined;
+    if (!existing || !canAccessOwner(req.auth!, existing.user_id)) { res.status(404).json({ error: 'Not found' }); return; }
+
+    db.prepare(`DELETE FROM credentials WHERE id = ?`).run(req.params.id);
     res.status(204).send();
   });
 

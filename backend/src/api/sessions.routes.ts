@@ -2,6 +2,17 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import type { AppDatabase } from '../db/sqlite';
 import { TmuxService, isValidTmuxSessionName } from '../services/tmux-service';
+import { canAccessOwner, ownerIdFor } from '../middleware/auth';
+
+type Mode = 'local' | 'ssh';
+function isMode(v: unknown): v is Mode {
+  return v === 'local' || v === 'ssh';
+}
+
+interface SessionRow {
+  id: string;
+  user_id: string | null;
+}
 
 export function sessionsRouter(
   db: AppDatabase,
@@ -13,8 +24,13 @@ export function sessionsRouter(
   const now    = () => new Date().toISOString();
 
   // GET /api/sessions
-  router.get('/', (_req, res) => {
-    const rows = db.prepare(`SELECT * FROM terminal_sessions WHERE status = 'active' ORDER BY created_at DESC`).all();
+  router.get('/', (req, res) => {
+    const auth = req.auth!;
+    const rows = (
+      auth.role === 'admin'
+        ? db.prepare(`SELECT * FROM terminal_sessions WHERE status = 'active' ORDER BY created_at DESC`).all()
+        : db.prepare(`SELECT * FROM terminal_sessions WHERE status = 'active' AND user_id = ? ORDER BY created_at DESC`).all(auth.userId)
+    );
     res.json(rows);
   });
 
@@ -31,19 +47,34 @@ export function sessionsRouter(
       res.status(400).json({ error: 'tmux_session and name are required' });
       return;
     }
-
+    if (!isMode(mode)) { res.status(400).json({ error: 'mode must be local or ssh' }); return; }
     if (!isValidTmuxSessionName(tmux_session)) {
       res.status(400).json({ error: 'tmux_session must match ^[a-zA-Z0-9_-]{1,128}$' });
       return;
     }
 
+    if (mode === 'ssh') {
+      if (!connection_id || typeof connection_id !== 'string') {
+        res.status(400).json({ error: 'connection_id is required for ssh mode' });
+        return;
+      }
+      const connection = db.prepare(`SELECT user_id FROM connections WHERE id = ?`).get(connection_id) as
+        | { user_id: string | null }
+        | undefined;
+      if (!connection || !canAccessOwner(req.auth!, connection.user_id)) {
+        res.status(404).json({ error: 'Connection not found' });
+        return;
+      }
+    }
+
     const id = makeId();
     const ts = now();
+    const userId = ownerIdFor(req.auth!);
 
     db.prepare(`
-      INSERT INTO terminal_sessions (id, mode, name, tmux_session, connection_id, status, cols, rows, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
-    `).run(id, mode, name, tmux_session, connection_id || null, Number(cols), Number(rows), ts, ts);
+      INSERT INTO terminal_sessions (id, user_id, mode, name, tmux_session, connection_id, status, cols, rows, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+    `).run(id, userId, mode, name, tmux_session, connection_id || null, Number(cols), Number(rows), ts, ts);
 
     res.status(201).json({
       id,
@@ -62,19 +93,27 @@ export function sessionsRouter(
 
   // POST /api/sessions/:id/close
   router.post('/:id/close', (req, res) => {
+    const existing = db.prepare(`SELECT id, user_id FROM terminal_sessions WHERE id = ?`).get(req.params.id) as
+      | SessionRow
+      | undefined;
+    if (!existing || !canAccessOwner(req.auth!, existing.user_id)) { res.status(404).json({ error: 'Not found' }); return; }
+
     const ts = now();
-    const result = db.prepare(`
+    db.prepare(`
       UPDATE terminal_sessions SET status = 'closed', closed_at = ?, updated_at = ? WHERE id = ?
     `).run(ts, ts, req.params.id);
-    if (result.changes === 0) { res.status(404).json({ error: 'Not found' }); return; }
     closeRuntimeSession(req.params.id);
     res.json({ id: req.params.id, status: 'closed' });
   });
 
   // DELETE /api/sessions/:id
   router.delete('/:id', (req, res) => {
-    const result = db.prepare(`DELETE FROM terminal_sessions WHERE id = ?`).run(req.params.id);
-    if (result.changes === 0) { res.status(404).json({ error: 'Not found' }); return; }
+    const existing = db.prepare(`SELECT id, user_id FROM terminal_sessions WHERE id = ?`).get(req.params.id) as
+      | SessionRow
+      | undefined;
+    if (!existing || !canAccessOwner(req.auth!, existing.user_id)) { res.status(404).json({ error: 'Not found' }); return; }
+
+    db.prepare(`DELETE FROM terminal_sessions WHERE id = ?`).run(req.params.id);
     closeRuntimeSession(req.params.id);
     res.status(204).send();
   });

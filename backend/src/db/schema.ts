@@ -3,6 +3,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS credentials (
   id TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   host TEXT,
   username TEXT NOT NULL,
@@ -25,7 +26,8 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS connections (
   id TEXT PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
   host TEXT NOT NULL,
   port INTEGER NOT NULL DEFAULT 22,
   username TEXT NOT NULL,
@@ -34,6 +36,7 @@ CREATE TABLE IF NOT EXISTS connections (
   private_key_enc TEXT,
   passphrase_enc TEXT,
   credential_id TEXT,
+  host_key_fingerprint TEXT,
   tmux_session TEXT NOT NULL DEFAULT 'neuroterm',
   mode TEXT NOT NULL DEFAULT 'ssh' CHECK (mode IN ('ssh', 'local')),
   created_at TEXT NOT NULL,
@@ -43,6 +46,7 @@ CREATE TABLE IF NOT EXISTS connections (
 
 CREATE TABLE IF NOT EXISTS terminal_sessions (
   id TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   mode TEXT NOT NULL CHECK (mode IN ('local', 'ssh')),
   name TEXT NOT NULL,
   tmux_session TEXT NOT NULL,
@@ -65,7 +69,10 @@ CREATE TABLE IF NOT EXISTS settings (
 
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_status ON terminal_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_connection ON terminal_sessions(connection_id);
-CREATE INDEX IF NOT EXISTS idx_connections_name ON connections(name);
-CREATE INDEX IF NOT EXISTS idx_credentials_name ON credentials(name);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+-- The user_id-dependent indexes (idx_*_user, idx_*_user_name) are created in
+-- runMigrations() instead of here: on an upgraded (pre-multi-user) database
+-- the user_id column doesn't exist yet at the point this script runs, and
+-- schemaSql's CREATE TABLE IF NOT EXISTS is a no-op against an existing
+-- table — the column only appears once the ALTER TABLE migrations run.
 `;
