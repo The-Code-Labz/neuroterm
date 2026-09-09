@@ -24,11 +24,17 @@ export default function XtermPane({ tabId, sessionId, active }: XtermPaneProps):
     updateTabStatus(tabId, s === 'connected' ? 'connected' : s === 'reconnecting' ? 'reconnecting' : s === 'disconnected' ? 'disconnected' : 'connecting');
   }, [tabId, updateTabStatus]);
 
+  // NOTE: `enabled` is intentionally NOT tied to `active`. All panes stay
+  // mounted with only the active one visible (see TerminalPage), and the
+  // backing tmux/SSH session should keep streaming in the background too —
+  // tearing the socket down on every tab switch forced a fresh pty/SSH
+  // reattach (and a fresh resize negotiation) each time, which was the
+  // actual cause of scrollback getting reflowed/mangled on tab switches.
   const { sendInput, sendResize } = useTerminalSocket({
     sessionId,
     terminal,
     onStatusChange,
-    enabled: active,
+    enabled: true,
   });
 
   // Mount xterm
@@ -74,6 +80,28 @@ export default function XtermPane({ tabId, sessionId, active }: XtermPaneProps):
     term.loadAddon(webLinksAddon);
     term.open(containerRef.current);
 
+    // xterm.js does NOT special-case Ctrl+C/Ctrl+V by default — every
+    // keypress is fed straight to the pty, so Ctrl+C always sends SIGINT
+    // (and preventDefault()s the keydown, which also blocks the browser's
+    // native "copy" command tied to that same shortcut) even when the user
+    // has text selected, and Ctrl+V never reaches the native paste flow.
+    // Fall back to the browser's own clipboard handling for the
+    // conventional copy/paste chords instead of forwarding them to the
+    // shell as input.
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
+      const mod = event.ctrlKey || event.metaKey;
+      // Ctrl/Cmd+Shift+C or Ctrl/Cmd+C with an active selection → copy.
+      if (mod && (event.key === 'c' || event.key === 'C') && (event.shiftKey || term.hasSelection())) {
+        return false;
+      }
+      // Ctrl/Cmd+Shift+V or Ctrl/Cmd+V → paste.
+      if (mod && (event.key === 'v' || event.key === 'V')) {
+        return false;
+      }
+      return true;
+    });
+
     requestAnimationFrame(() => {
       fitAddon.fit();
     });
@@ -97,13 +125,22 @@ export default function XtermPane({ tabId, sessionId, active }: XtermPaneProps):
     return () => dispose.dispose();
   }, [terminal, sendInput]);
 
-  // Resize observer
+  // Resize observer. Inactive panes are kept mounted with `display: none`
+  // (see TerminalPage), which collapses them to a 0x0 box. FitAddon.fit()
+  // on a 0x0 container computes the smallest possible grid (as low as
+  // 2 cols x 1 row) and, since that got pushed straight to the pty/tmux
+  // session, forced an immediate reflow of the remote screen down to ~2
+  // columns wide — mangling wrapped lines and scrollback. Only ever fit
+  // (and only ever push a resize to the backend) while the pane is both
+  // active and actually has real on-screen dimensions.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     const observer = new ResizeObserver(() => {
+      if (!active) return;
       if (!fitAddonRef.current || !termRef.current) return;
+      if (container.clientWidth === 0 || container.clientHeight === 0) return;
       try {
         fitAddonRef.current.fit();
         sendResize(termRef.current.cols, termRef.current.rows);
@@ -112,18 +149,21 @@ export default function XtermPane({ tabId, sessionId, active }: XtermPaneProps):
 
     observer.observe(container);
     return () => observer.disconnect();
-  }, [sendResize]);
+  }, [active, sendResize]);
 
-  // Re-fit on active
+  // Re-fit on activation (tab regains focus / becomes visible again)
   useEffect(() => {
-    if (active && fitAddonRef.current && termRef.current) {
-      setTimeout(() => {
-        try {
-          fitAddonRef.current!.fit();
-          sendResize(termRef.current!.cols, termRef.current!.rows);
-        } catch { /* ignore */ }
-      }, 50);
-    }
+    if (!active) return;
+    const container = containerRef.current;
+    const timer = setTimeout(() => {
+      if (!fitAddonRef.current || !termRef.current || !container) return;
+      if (container.clientWidth === 0 || container.clientHeight === 0) return;
+      try {
+        fitAddonRef.current.fit();
+        sendResize(termRef.current.cols, termRef.current.rows);
+      } catch { /* ignore */ }
+    }, 50);
+    return () => clearTimeout(timer);
   }, [active, sendResize]);
 
   return (

@@ -1,11 +1,27 @@
 import * as pty from 'node-pty';
 import { Client as SSHClient } from 'ssh2';
+import { StringDecoder } from 'string_decoder';
 import type { WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import type { AppDatabase } from '../db/sqlite';
 import type { CryptoService } from '../services/crypto-service';
 import { TmuxService, isValidTmuxSessionName } from '../services/tmux-service';
 import { canAccessOwner, type AuthContext } from '../middleware/auth';
+
+// PTY/tmux windows below this size make no practical sense and, worse, force
+// a real reflow of the remote scrollback (tmux/readline rewrap lines to the
+// new width). A stray resize event driven by a hidden ( display:none ,
+// 0x0 ) browser container previously collapsed sessions down to ~2x1,
+// permanently mangling wrapped lines and scrollback history. Clamp every
+// resize we accept, client- and server-side, so that can't happen again.
+const MIN_COLS = 10;
+const MIN_ROWS = 3;
+function clampDims(cols: number, rows: number): { cols: number; rows: number } {
+  return {
+    cols: Math.max(MIN_COLS, Math.floor(cols) || MIN_COLS),
+    rows: Math.max(MIN_ROWS, Math.floor(rows) || MIN_ROWS),
+  };
+}
 
 // ─── Wire protocol ────────────────────────────────────────────────────────────
 
@@ -40,6 +56,16 @@ export function closeSession(sessionId: string): void {
   if (!runtime) return;
   try { runtime.cleanup(); } catch { /* ignore */ }
   activeSessions.delete(sessionId);
+}
+
+/** Persist the last-known terminal size so a future reattach (server restart,
+ *  dropped connection, etc.) resumes at the size the client actually last
+ *  displayed rather than the size recorded at session creation. */
+function persistDims(db: AppDatabase, sessionId: string, cols: number, rows: number): void {
+  try {
+    db.prepare(`UPDATE terminal_sessions SET cols = ?, rows = ?, updated_at = ? WHERE id = ?`)
+      .run(cols, rows, new Date().toISOString(), sessionId);
+  } catch { /* best-effort */ }
 }
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
@@ -99,7 +125,7 @@ export function handleTerminalWs(
 
   // ── Route to correct mode ─────────────────────────────────────────────────
   if (mode === 'local') {
-    spawnLocalTmux({ ws, tmux, tmuxSession, cols, rows, sessionId, pingInterval });
+    spawnLocalTmux({ ws, db, tmux, tmuxSession, cols, rows, sessionId, pingInterval });
   } else {
     // Load connection row
     const connection = db.prepare(
@@ -147,6 +173,7 @@ export function handleTerminalWs(
 
 interface LocalOpts {
   ws: WebSocket;
+  db: AppDatabase;
   tmux: TmuxService;
   tmuxSession: string;
   cols: number;
@@ -156,7 +183,7 @@ interface LocalOpts {
 }
 
 function spawnLocalTmux(opts: LocalOpts): void {
-  const { ws, tmux, tmuxSession, cols, rows, pingInterval } = opts;
+  const { ws, db, tmux, tmuxSession, cols, rows, pingInterval } = opts;
 
   // Ensure tmux session exists
   tmux.createSession(tmuxSession, cols, rows);
@@ -194,7 +221,13 @@ function spawnLocalTmux(opts: LocalOpts): void {
 
     switch (msg.type) {
       case 'input':  ptyProcess.write(msg.data); break;
-      case 'resize': ptyProcess.resize(msg.cols, msg.rows); break;
+      case 'init':
+      case 'resize': {
+        const d = clampDims(msg.cols, msg.rows);
+        ptyProcess.resize(d.cols, d.rows);
+        persistDims(db, opts.sessionId, d.cols, d.rows);
+        break;
+      }
       case 'ping':   send(ws, { type: 'pong' }); break;
       case 'close':
       case 'detach':
@@ -316,13 +349,22 @@ function spawnSshTmux(opts: SshOpts): void {
 
       send(ws, { type: 'status', status: 'tmux_ready', tmuxSession });
 
-      // Stream → browser
+      // Stream → browser. Decode with a persistent StringDecoder rather than
+      // Buffer#toString('utf8') per chunk — TCP frames a byte stream, so a
+      // multi-byte UTF-8 character (box-drawing glyphs, emoji, non-ASCII
+      // prompts, etc.) can straddle two chunks. Decoding each chunk in
+      // isolation turns the split half of that character into U+FFFD on
+      // both sides, permanently corrupting/"disappearing" text — the
+      // decoder buffers incomplete trailing bytes until the rest arrives.
+      const stdoutDecoder = new StringDecoder('utf8');
+      const stderrDecoder = new StringDecoder('utf8');
+
       stream.on('data', (data: Buffer) => {
-        send(ws, { type: 'output', data: data.toString('utf8') });
+        send(ws, { type: 'output', data: stdoutDecoder.write(data) });
       });
 
       stream.stderr.on('data', (data: Buffer) => {
-        send(ws, { type: 'output', data: data.toString('utf8') });
+        send(ws, { type: 'output', data: stderrDecoder.write(data) });
       });
 
       stream.on('close', () => {
@@ -340,7 +382,13 @@ function spawnSshTmux(opts: SshOpts): void {
 
         switch (msg.type) {
           case 'input':  stream.write(msg.data); break;
-          case 'resize': stream.setWindow(msg.rows, msg.cols, 0, 0); break;
+          case 'init':
+          case 'resize': {
+            const d = clampDims(msg.cols, msg.rows);
+            stream.setWindow(d.rows, d.cols, 0, 0);
+            persistDims(db, opts.sessionId, d.cols, d.rows);
+            break;
+          }
           case 'ping':   send(ws, { type: 'pong' }); break;
           case 'detach': stream.write('q'); break;
           case 'close':  stream.close(); break;
