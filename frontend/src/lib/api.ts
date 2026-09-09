@@ -119,6 +119,8 @@ export const api = {
     register: (username: string, password: string) =>
       req<{ token: string; user: ApiUser }>('POST', '/api/auth/register', { username, password }),
     me:       () => req<ApiUser>('GET', '/api/auth/me'),
+    logout:   () => req<void>('POST', '/api/auth/logout'),
+    logoutAll: () => req<void>('POST', '/api/auth/logout-all'),
   },
 
   credentials: {

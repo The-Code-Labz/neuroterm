@@ -20,8 +20,18 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+  token_version INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+-- Single-token revocation (logout): a JWT's jti lands here between logout
+-- and its own natural expiry, after which the row is dead weight and gets
+-- swept lazily (see cleanupExpiredRevocations in middleware/auth.ts).
+CREATE TABLE IF NOT EXISTS revoked_tokens (
+  jti TEXT PRIMARY KEY,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS connections (
@@ -70,6 +80,7 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_status ON terminal_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_connection ON terminal_sessions(connection_id);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_at);
 -- The user_id-dependent indexes (idx_*_user, idx_*_user_name) are created in
 -- runMigrations() instead of here: on an upgraded (pre-multi-user) database
 -- the user_id column doesn't exist yet at the point this script runs, and

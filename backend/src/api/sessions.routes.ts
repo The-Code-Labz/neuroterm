@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import type { AppDatabase } from '../db/sqlite';
 import { TmuxService, isValidTmuxSessionName } from '../services/tmux-service';
 import { canAccessOwner, ownerIdFor } from '../middleware/auth';
+import { clampDims } from '../utils/terminal-dims';
 
 type Mode = 'local' | 'ssh';
 function isMode(v: unknown): v is Mode {
@@ -70,11 +71,12 @@ export function sessionsRouter(
     const id = makeId();
     const ts = now();
     const userId = ownerIdFor(req.auth!);
+    const dims = clampDims(Number(cols), Number(rows));
 
     db.prepare(`
       INSERT INTO terminal_sessions (id, user_id, mode, name, tmux_session, connection_id, status, cols, rows, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
-    `).run(id, userId, mode, name, tmux_session, connection_id || null, Number(cols), Number(rows), ts, ts);
+    `).run(id, userId, mode, name, tmux_session, connection_id || null, dims.cols, dims.rows, ts, ts);
 
     res.status(201).json({
       id,
@@ -83,8 +85,8 @@ export function sessionsRouter(
       tmux_session,
       connection_id: connection_id || null,
       status: 'active',
-      cols: Number(cols),
-      rows: Number(rows),
+      cols: dims.cols,
+      rows: dims.rows,
       wsUrl: `/ws/terminal/${id}`,
       created_at: ts,
       updated_at: ts,
