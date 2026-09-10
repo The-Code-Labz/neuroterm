@@ -1,0 +1,45 @@
+# Traefik reverse-proxy override.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d
+#
+# Publishes the frontend only through Traefik (TLS-terminated) and drops the
+# direct host port from the base file. Requires an external Docker network
+# that your Traefik instance is already attached to (see TRAEFIK_NETWORK in
+# .env.example).
+
+services:
+
+  backend:
+    networks:
+      - neuroterm
+    # No Traefik labels/network here on purpose: the backend is never routed
+    # to directly. The frontend's nginx proxies /api/ and /ws/ to it over the
+    # internal `neuroterm` network. Keep it off the `traefik` network too —
+    # least exposure.
+
+  frontend:
+    ports: !reset []
+    networks:
+      - neuroterm
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik"
+      # HTTP router — redirects to HTTPS
+      - "traefik.http.routers.neuroterm-web.rule=Host(`${NEUROTERM_DOMAIN}`)"
+      - "traefik.http.routers.neuroterm-web.entrypoints=web"
+      - "traefik.http.routers.neuroterm-web.middlewares=neuroterm-https-redirect"
+      - "traefik.http.middlewares.neuroterm-https-redirect.redirectscheme.scheme=https"
+      # HTTPS router
+      - "traefik.http.routers.neuroterm-secure.rule=Host(`${NEUROTERM_DOMAIN}`)"
+      - "traefik.http.routers.neuroterm-secure.entrypoints=websecure"
+      - "traefik.http.routers.neuroterm-secure.tls=true"
+      - "traefik.http.routers.neuroterm-secure.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
+      # Service — nginx inside the frontend container listens on 3000
+      - "traefik.http.services.neuroterm-svc.loadbalancer.server.port=3000"
+
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}
