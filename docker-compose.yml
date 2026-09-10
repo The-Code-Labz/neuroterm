@@ -1,7 +1,7 @@
 services:
 
   backend:
-    build: ./backend
+    image: ghcr.io/the-code-labz/neuroterm-backend:${NEUROTERM_VERSION:-latest}
     container_name: neuroterm-backend
     restart: unless-stopped
     tty: true
@@ -22,7 +22,7 @@ services:
       - neuroterm
 
   frontend:
-    build: ./frontend
+    image: ghcr.io/the-code-labz/neuroterm-frontend:${NEUROTERM_VERSION:-latest}
     container_name: neuroterm-frontend
     restart: unless-stopped
     ports:
