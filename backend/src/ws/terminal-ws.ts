@@ -7,21 +7,7 @@ import type { AppDatabase } from '../db/sqlite';
 import type { CryptoService } from '../services/crypto-service';
 import { TmuxService, isValidTmuxSessionName } from '../services/tmux-service';
 import { canAccessOwner, type AuthContext } from '../middleware/auth';
-
-// PTY/tmux windows below this size make no practical sense and, worse, force
-// a real reflow of the remote scrollback (tmux/readline rewrap lines to the
-// new width). A stray resize event driven by a hidden ( display:none ,
-// 0x0 ) browser container previously collapsed sessions down to ~2x1,
-// permanently mangling wrapped lines and scrollback history. Clamp every
-// resize we accept, client- and server-side, so that can't happen again.
-const MIN_COLS = 10;
-const MIN_ROWS = 3;
-function clampDims(cols: number, rows: number): { cols: number; rows: number } {
-  return {
-    cols: Math.max(MIN_COLS, Math.floor(cols) || MIN_COLS),
-    rows: Math.max(MIN_ROWS, Math.floor(rows) || MIN_ROWS),
-  };
-}
+import { clampDims } from '../utils/terminal-dims';
 
 // ─── Wire protocol ────────────────────────────────────────────────────────────
 

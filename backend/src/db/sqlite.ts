@@ -107,6 +107,13 @@ function runMigrations(db: AppDatabase): void {
     db.prepare(`ALTER TABLE connections ADD COLUMN host_key_fingerprint TEXT`).run();
   }
 
+  // JWT revocation: bumping token_version invalidates every previously
+  // issued token for that user at once ("log out everywhere") — see
+  // bumpTokenVersion / POST /api/auth/logout-all in middleware/auth.ts.
+  if (!hasColumn(db, 'users', 'token_version')) {
+    db.prepare(`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`).run();
+  }
+
   db.prepare(`CREATE INDEX IF NOT EXISTS idx_connections_credential ON connections(credential_id)`).run();
   db.prepare(`CREATE INDEX IF NOT EXISTS idx_terminal_sessions_user ON terminal_sessions(user_id)`).run();
   db.prepare(`CREATE INDEX IF NOT EXISTS idx_connections_user ON connections(user_id)`).run();
@@ -130,7 +137,7 @@ export function openDatabase(
 
   db.prepare(`
     INSERT INTO settings (key, value, updated_at)
-    VALUES ('schema_version', '3', ?)
+    VALUES ('schema_version', '4', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run(new Date().toISOString());
 

@@ -16,7 +16,7 @@ const WS_SUBPROTOCOL_PREFIX = 'neuroterm-auth.';
 // role is 'admin'.
 export type AuthContext =
   | { kind: 'static'; userId: null; role: 'admin' }
-  | { kind: 'jwt'; userId: string; username: string; role: 'admin' | 'user' };
+  | { kind: 'jwt'; userId: string; username: string; role: 'admin' | 'user'; jti: string; exp: number };
 
 /** True if `auth` may access/modify a row owned by `ownerId` (null = unowned/legacy row). */
 export function canAccessOwner(auth: AuthContext, ownerId: string | null): boolean {
@@ -98,9 +98,9 @@ function isValidStaticToken(token: string): boolean {
   return safeTokenEqual(token, expected);
 }
 
-interface JwtPayload { sub: string }
+interface JwtPayload { sub: string; ver?: number; jti?: string; exp?: number }
 
-interface UserRoleRow { id: string; username: string; role: 'admin' | 'user' }
+interface UserRoleRow { id: string; username: string; role: 'admin' | 'user'; token_version: number }
 
 /**
  * Resolve the auth context for a request, or null if unauthenticated.
@@ -108,7 +108,15 @@ interface UserRoleRow { id: string; username: string; role: 'admin' | 'user' }
  * For JWTs, role/existence is always re-checked against the *current* users
  * table rather than trusted from the token payload — a revoked or demoted
  * user loses access immediately instead of only once their (up to 7-day-old)
- * token expires.
+ * token expires. Two more checks back that up:
+ *  - `ver` must match the user's current `token_version` (bumped by
+ *    logout-all — see bumpTokenVersion — which invalidates every token
+ *    issued before the bump in one shot).
+ *  - the token's `jti` must not be in `revoked_tokens` (single-token logout
+ *    — see revokeToken).
+ * Tokens signed before this revocation support existed (no `jti`/`ver`
+ * claims) are treated as version 0 / unrevocable-by-jti, matching prior
+ * behavior for their remaining lifetime.
  */
 export function resolveAuthContext(
   input: { headers: IncomingHttpHeaders; url?: string },
@@ -126,14 +134,59 @@ export function resolveAuthContext(
 
   try {
     const payload = jwt.verify(token, secret, { algorithms: [JWT_ALGORITHM] }) as JwtPayload;
-    const user = db.prepare(`SELECT id, username, role FROM users WHERE id = ?`).get(payload.sub) as
+    const user = db.prepare(`SELECT id, username, role, token_version FROM users WHERE id = ?`).get(payload.sub) as
       | UserRoleRow
       | undefined;
     if (!user) return null;
-    return { kind: 'jwt', userId: user.id, username: user.username, role: user.role };
+
+    const ver = payload.ver ?? 0;
+    if (ver !== user.token_version) return null;
+
+    if (payload.jti) {
+      const revoked = db.prepare(`SELECT 1 FROM revoked_tokens WHERE jti = ?`).get(payload.jti);
+      if (revoked) return null;
+    }
+
+    return {
+      kind: 'jwt',
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+      jti: payload.jti ?? '',
+      exp: payload.exp ?? 0,
+    };
   } catch {
     return null;
   }
+}
+
+/** Revoke a single token (logout) — inert until the token's own natural
+ *  expiry, after which it's swept by cleanupExpiredRevocations. No-op for
+ *  a token with no `jti` (pre-revocation-support tokens). */
+export function revokeToken(db: AppDatabase, jti: string, exp: number): void {
+  if (!jti) return;
+  cleanupExpiredRevocations(db);
+  const expiresAt = exp ? new Date(exp * 1000).toISOString() : new Date().toISOString();
+  db.prepare(`
+    INSERT INTO revoked_tokens (jti, expires_at, revoked_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(jti) DO NOTHING
+  `).run(jti, expiresAt, new Date().toISOString());
+}
+
+/** Invalidate every token issued to this user before now ("log out
+ *  everywhere") by bumping their token_version — any already-issued JWT's
+ *  embedded `ver` claim will no longer match. */
+export function bumpTokenVersion(db: AppDatabase, userId: string): void {
+  db.prepare(`UPDATE users SET token_version = token_version + 1, updated_at = ? WHERE id = ?`)
+    .run(new Date().toISOString(), userId);
+}
+
+/** Sweep revoked-token rows whose underlying JWT has already naturally
+ *  expired — once expired, resolveAuthContext would reject the token on
+ *  `jwt.verify` alone, so the revocation row is dead weight. */
+export function cleanupExpiredRevocations(db: AppDatabase): void {
+  db.prepare(`DELETE FROM revoked_tokens WHERE expires_at < ?`).run(new Date().toISOString());
 }
 
 // ── Express middleware ────────────────────────────────────────────────────────

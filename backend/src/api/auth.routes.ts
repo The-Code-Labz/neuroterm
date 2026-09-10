@@ -4,6 +4,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import type { AppDatabase } from '../db/sqlite';
 import { rateLimit } from '../middleware/rate-limit';
+import { resolveAuthContext, revokeToken, bumpTokenVersion } from '../middleware/auth';
 
 const JWT_ALGORITHM = 'HS256' as const;
 
@@ -20,6 +21,7 @@ interface UserRow {
   username: string;
   password_hash: string;
   role: 'admin' | 'user';
+  token_version: number;
   created_at: string;
   updated_at: string;
 }
@@ -33,9 +35,9 @@ function jwtSecret(): string {
   return s;
 }
 
-function signToken(user: Pick<UserRow, 'id' | 'username' | 'role'>): string {
+function signToken(user: Pick<UserRow, 'id' | 'username' | 'role' | 'token_version'>): string {
   return jwt.sign(
-    { sub: user.id, username: user.username, role: user.role },
+    { sub: user.id, username: user.username, role: user.role, ver: user.token_version, jti: crypto.randomUUID() },
     jwtSecret(),
     { expiresIn: '7d', algorithm: JWT_ALGORITHM }
   );
@@ -83,7 +85,7 @@ export function authRouter(db: AppDatabase): Router {
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(id, username.trim(), password_hash, role, ts, ts);
 
-      const user = { id, username: username.trim(), role };
+      const user = { id, username: username.trim(), role, token_version: 0 };
       const token = signToken(user);
 
       res.status(201).json({ token, user: { ...user, created_at: ts } });
@@ -122,22 +124,32 @@ export function authRouter(db: AppDatabase): Router {
     }
   });
 
-  // GET /api/auth/me
+  // GET /api/auth/me — routed through resolveAuthContext (not a raw
+  // jwt.verify) so a revoked/logged-out token is rejected here too, not just
+  // on the CRUD routes.
   router.get('/me', (req, res) => {
-    const header = req.headers.authorization;
-    if (!header) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const auth = resolveAuthContext({ headers: req.headers }, db);
+    if (!auth || auth.kind !== 'jwt') { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(auth.userId) as UserRow | undefined;
+    if (!user) { res.status(401).json({ error: 'User not found' }); return; }
+    res.json(safeUser(user));
+  });
 
-    const match = header.match(/^Bearer\s+(.+)$/i);
-    if (!match) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  // POST /api/auth/logout — revoke just the token presented on this request.
+  router.post('/logout', (req, res) => {
+    const auth = resolveAuthContext({ headers: req.headers }, db);
+    if (!auth) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    if (auth.kind === 'jwt') revokeToken(db, auth.jti, auth.exp);
+    res.status(204).send();
+  });
 
-    try {
-      const payload = jwt.verify(match[1], jwtSecret(), { algorithms: [JWT_ALGORITHM] }) as { sub: string };
-      const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(payload.sub) as UserRow | undefined;
-      if (!user) { res.status(401).json({ error: 'User not found' }); return; }
-      res.json(safeUser(user));
-    } catch {
-      res.status(401).json({ error: 'Invalid or expired token' });
-    }
+  // POST /api/auth/logout-all — invalidate every token ever issued to this
+  // user (e.g. after a leaked credential), not just the one presented here.
+  router.post('/logout-all', (req, res) => {
+    const auth = resolveAuthContext({ headers: req.headers }, db);
+    if (!auth || auth.kind !== 'jwt') { res.status(401).json({ error: 'Unauthorized' }); return; }
+    bumpTokenVersion(db, auth.userId);
+    res.status(204).send();
   });
 
   return router;

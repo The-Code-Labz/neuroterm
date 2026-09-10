@@ -47,6 +47,10 @@ export function useAuth(): AuthState {
   }, []);
 
   const logout = useCallback(() => {
+    // Best-effort — revoke the token server-side too, not just locally, so
+    // it can't be replayed if it leaked (e.g. from browser history/logs)
+    // before this call. Clear local state regardless of whether it succeeds.
+    api.auth.logout().catch(() => { /* token already invalid/expired — fine */ });
     localStorage.removeItem(JWT_KEY);
     setUser(null);
     navigate('/login', { replace: true });

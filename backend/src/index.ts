@@ -10,7 +10,13 @@ import { sessionsRouter } from './api/sessions.routes';
 import { credentialsRouter } from './api/credentials.routes';
 import { authRouter } from './api/auth.routes';
 import { handleTerminalWs, closeSession } from './ws/terminal-ws';
-import { createAuthMiddleware, resolveWsAuthContext, selectWsProtocol, warnIfJwtSecretFallback } from './middleware/auth';
+import {
+  createAuthMiddleware,
+  resolveWsAuthContext,
+  selectWsProtocol,
+  warnIfJwtSecretFallback,
+  cleanupExpiredRevocations,
+} from './middleware/auth';
 import { rateLimit } from './middleware/rate-limit';
 
 const PORT = Number(process.env.PORT) || 3001;
@@ -24,6 +30,10 @@ const tmux   = new TmuxService();
 
 // Ensure default local session exists on startup
 tmux.createSession(process.env.DEFAULT_TMUX_SESSION || 'neuroterm');
+
+// Sweep any revoked-token rows left over from a previous run whose
+// underlying JWT has since expired naturally (see middleware/auth.ts).
+cleanupExpiredRevocations(db);
 
 // ── Express ───────────────────────────────────────────────────────────────────
 const app = express();
@@ -82,8 +92,17 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 // ── HTTP + WebSocket server ───────────────────────────────────────────────────
 const httpServer = createServer(app);
 
+// `ws`'s default maxPayload is unlimited (bounded only by Node's own frame
+// handling), so a connected client could send arbitrarily large WS frames
+// straight into the JSON.parse calls in ws/terminal-ws.ts with no ceiling.
+// 1 MiB comfortably covers a large one-shot terminal paste (xterm.js
+// delivers a whole paste as a single `input` message) while bounding memory
+// per inbound frame.
+const WS_MAX_PAYLOAD_BYTES = 1024 * 1024;
+
 const wss = new WebSocketServer({
   noServer: true,
+  maxPayload: WS_MAX_PAYLOAD_BYTES,
   handleProtocols: (protocols) => selectWsProtocol(protocols),
 });
 
