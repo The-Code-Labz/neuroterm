@@ -1,9 +1,13 @@
+import { useNavigate } from 'react-router-dom';
+import { Terminal, LayoutGrid, Rows3, Plus } from 'lucide-react';
 import { useSessionStore } from '../store/session-store';
 import TerminalTabs from '../components/terminal/TerminalTabs';
 import XtermPane from '../components/terminal/XtermPane';
 import DesktopCanvas from '../components/desktop/DesktopCanvas';
-import { Terminal, LayoutGrid, Rows3 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import SegmentedControl from '../components/ui/SegmentedControl';
+import IconButton from '../components/ui/IconButton';
+import EmptyState from '../components/ui/EmptyState';
+import Button from '../components/ui/Button';
 
 export default function TerminalPage(): JSX.Element {
   const { tabs, activeTabId, setActiveTab, closeTab, viewMode, setViewMode } = useSessionStore();
@@ -11,49 +15,44 @@ export default function TerminalPage(): JSX.Element {
 
   if (tabs.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-4">
-        <Terminal size={40} className="text-gray-700" />
-        <div className="text-center">
-          <p className="text-sm font-mono text-gray-500">No active sessions</p>
-          <p className="text-xs font-mono text-gray-600 mt-1">Go to Connections and click Connect</p>
-        </div>
-        <button
-          onClick={() => navigate('/')}
-          className="px-4 py-2 rounded border border-neuro-cyan/50 text-neuro-cyan text-xs font-mono hover:bg-neuro-cyan/10 transition-colors"
-        >
-          Go to Connections
-        </button>
-      </div>
+      <EmptyState
+        className="h-full"
+        icon={<Terminal size={32} strokeWidth={1.5} />}
+        title="No active sessions"
+        description="Go to Connections and connect or resume a session to open it here."
+        action={
+          <Button variant="primary" onClick={() => navigate('/')}>
+            Go to Connections
+          </Button>
+        }
+      />
     );
   }
 
-  const ViewToggle = (
-    <div className="flex items-center gap-0.5 px-1.5 bg-neuro-panel border-b border-neuro-border">
-      <button
-        onClick={() => setViewMode('tabs')}
-        title="Tabs view"
-        className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-mono rounded-t transition-colors ${
-          viewMode === 'tabs' ? 'text-neuro-cyan bg-neuro-bg border border-b-0 border-neuro-border' : 'text-gray-500 hover:text-gray-300'
-        }`}
-      >
-        <Rows3 size={12} /> Tabs
-      </button>
-      <button
-        onClick={() => setViewMode('desktop')}
-        title="NeuroDesk — windowed view"
-        className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-mono rounded-t transition-colors ${
-          viewMode === 'desktop' ? 'text-neuro-cyan bg-neuro-bg border border-b-0 border-neuro-border' : 'text-gray-500 hover:text-gray-300'
-        }`}
-      >
-        <LayoutGrid size={12} /> NeuroDesk
-      </button>
+  const toolbar = (
+    <div className="flex items-center gap-3 h-11 px-4 bg-surface1 border-b border-edge-subtle flex-shrink-0">
+      <span className="text-control text-ink-secondary">
+        {tabs.length} session{tabs.length === 1 ? '' : 's'}
+      </span>
+      <div className="flex-1" />
+      <SegmentedControl
+        aria-label="Workspace view"
+        size="sm"
+        value={viewMode}
+        onChange={setViewMode}
+        options={[
+          { value: 'tabs', label: 'Tabs', icon: <Rows3 size={13} strokeWidth={1.75} /> },
+          { value: 'desktop', label: 'NeuroDesk', icon: <LayoutGrid size={13} strokeWidth={1.75} /> },
+        ]}
+      />
+      <IconButton icon={<Plus size={16} strokeWidth={1.75} />} label="New session" size="sm" onClick={() => navigate('/')} />
     </div>
   );
 
   if (viewMode === 'desktop') {
     return (
       <div className="flex flex-col h-full">
-        {ViewToggle}
+        {toolbar}
         <div className="flex-1 min-h-0">
           <DesktopCanvas tabs={tabs} onCloseTab={closeTab} />
         </div>
@@ -63,28 +62,18 @@ export default function TerminalPage(): JSX.Element {
 
   return (
     <div className="flex flex-col h-full">
-      {ViewToggle}
-      {/* Tab bar */}
-      <TerminalTabs
-        tabs={tabs}
-        activeTabId={activeTabId}
-        onSelect={setActiveTab}
-        onClose={closeTab}
-      />
+      {toolbar}
+      <TerminalTabs tabs={tabs} activeTabId={activeTabId} onSelect={setActiveTab} onClose={closeTab} />
 
       {/* Terminal panes — all mounted, only active one visible */}
-      <div className="flex-1 overflow-hidden relative">
+      <div className="flex-1 overflow-hidden relative bg-termbg">
         {tabs.map((tab) => (
           <div
             key={tab.id}
             className="absolute inset-0"
             style={{ display: tab.id === activeTabId ? 'flex' : 'none', flexDirection: 'column' }}
           >
-            <XtermPane
-              tabId={tab.id}
-              sessionId={tab.sessionId}
-              active={tab.id === activeTabId}
-            />
+            <XtermPane tabId={tab.id} sessionId={tab.sessionId} active={tab.id === activeTabId} chrome="tab" title={tab.title} />
           </div>
         ))}
       </div>

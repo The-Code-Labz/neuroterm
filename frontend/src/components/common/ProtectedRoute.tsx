@@ -10,8 +10,8 @@ interface ProtectedRouteProps {
 export default function ProtectedRoute({ user, loading, children }: ProtectedRouteProps): JSX.Element {
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-neuro-bg">
-        <span className="text-neuro-cyan font-mono text-sm animate-pulse">Authenticating…</span>
+      <div className="flex items-center justify-center h-dvh bg-canvas">
+        <span className="text-accent font-sans text-body animate-pulse">Authenticating…</span>
       </div>
     );
   }

@@ -2,20 +2,99 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #root {
+/* Self-hosted variable sans — see src/assets/fonts/NOTICE.md */
+@font-face {
+  font-family: 'Geist Variable';
+  src: url('./assets/fonts/Geist-Variable.woff2') format('woff2-variations'),
+       url('./assets/fonts/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── Field Console design tokens ────────────────────────────────────────── */
+:root {
+  /* Surfaces */
+  --bg-canvas: #0B0E11;
+  --bg-base: #0F1316;
+  --surface-1: #111519;
+  --surface-2: #171C21;
+  --surface-3: #20262C;
+  --terminal-bg: #090B0D;
+
+  /* Borders */
+  --border-subtle: #242B31;
+  --border-default: #323B44;
+  --border-strong: #46525D;
+
+  /* Text */
+  --text-strong: #F2F5F7;
+  --text-primary: #D8DEE4;
+  --text-secondary: #9AA6B2;
+  --text-muted: #87939E;
+
+  /* Accent */
+  --accent: #67C7B8;
+  --accent-hover: #79D3C4;
+  --accent-ink: #071311;
+
+  /* Semantic status */
+  --success: #79C995;
+  --warning: #E3B766;
+  --danger: #E38282;
+  --info: #7CA9D6;
+  --focus: #8BD9CC;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
   height: 100%;
   margin: 0;
   padding: 0;
 }
 
 body {
-  background: #0d1117;
-  color: #c9d1d9;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  min-height: 100dvh;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: 'Geist Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 22px;
   overflow: hidden;
 }
 
-/* xterm overrides */
+/* Technical identifiers (hosts, ports, session names, shortcuts) opt into
+   this utility instead of the whole UI defaulting to monospace. */
+.font-technical {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+/* Visible, high-contrast focus ring used across all interactive elements. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Screen-reader-only utility for the shared aria-live announcer. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── xterm overrides ───────────────────────────────────────────────────── */
 .xterm {
   height: 100%;
   padding: 8px;
@@ -29,25 +108,56 @@ body {
   height: 100% !important;
 }
 
-/* NeuroDesk — Kasm-style dotted virtual desktop background */
+/* ── NeuroDesk — quiet instrument-panel dotted canvas ─────────────────── */
 .neurodesk-grid {
-  background-color: #0a0e14;
-  background-image: radial-gradient(circle, #1c2530 1px, transparent 1px);
-  background-size: 22px 22px;
+  background-color: var(--bg-canvas);
+  background-image: radial-gradient(circle, rgba(135, 147, 158, 0.13) 1px, transparent 1px);
+  background-size: 24px 24px;
 }
 
-/* Custom scrollbar */
+/* Subtle 8px corner resize affordance on react-rnd handles, visible only on
+   hover/focus of the window — the hit area stays full-size, this is purely
+   a visual hint. */
+.neurodesk-window:hover .neurodesk-resize-corner,
+.neurodesk-window:focus-within .neurodesk-resize-corner {
+  opacity: 1;
+}
+.neurodesk-resize-corner {
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+/* Disable all transitions on a window while it is being dragged/resized —
+   react-rnd drives position/size directly and must never fight a CSS
+   transition. Only border/shadow (focus state) may animate normally. */
+.neurodesk-window.is-interacting {
+  transition: none !important;
+}
+
+/* ── Custom scrollbar ──────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #161b22;
+  background: var(--surface-1);
 }
 ::-webkit-scrollbar-thumb {
-  background: #30363d;
+  background: var(--border-default);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #484f58;
+  background: var(--border-strong);
+}
+
+/* ── Motion ────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

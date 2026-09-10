@@ -90,6 +90,12 @@ const DEFAULT_LAYOUT: Omit<WindowLayout, 'zIndex'> = {
 export const windowKey = (tab: Pick<TerminalTab, 'connectionId' | 'tmuxSession'>): string =>
   `${tab.connectionId}:${tab.tmuxSession}`;
 
+// Technical identity line shown in tab/window chrome. Local sessions have no
+// meaningful username@host (the form doesn't collect one), so fall back to
+// the tmux session name rather than rendering a bare "@".
+export const tabIdentity = (tab: Pick<TerminalTab, 'mode' | 'username' | 'host' | 'tmuxSession'>): string =>
+  tab.mode === 'local' || !tab.username || !tab.host ? `tmux:${tab.tmuxSession}` : `${tab.username}@${tab.host}`;
+
 const makeId = (): string =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
