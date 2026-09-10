@@ -1,11 +1,12 @@
 import { useSessionStore } from '../store/session-store';
 import TerminalTabs from '../components/terminal/TerminalTabs';
 import XtermPane from '../components/terminal/XtermPane';
-import { Terminal } from 'lucide-react';
+import DesktopCanvas from '../components/desktop/DesktopCanvas';
+import { Terminal, LayoutGrid, Rows3 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 export default function TerminalPage(): JSX.Element {
-  const { tabs, activeTabId, setActiveTab, closeTab } = useSessionStore();
+  const { tabs, activeTabId, setActiveTab, closeTab, viewMode, setViewMode } = useSessionStore();
   const navigate = useNavigate();
 
   if (tabs.length === 0) {
@@ -26,8 +27,43 @@ export default function TerminalPage(): JSX.Element {
     );
   }
 
+  const ViewToggle = (
+    <div className="flex items-center gap-0.5 px-1.5 bg-neuro-panel border-b border-neuro-border">
+      <button
+        onClick={() => setViewMode('tabs')}
+        title="Tabs view"
+        className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-mono rounded-t transition-colors ${
+          viewMode === 'tabs' ? 'text-neuro-cyan bg-neuro-bg border border-b-0 border-neuro-border' : 'text-gray-500 hover:text-gray-300'
+        }`}
+      >
+        <Rows3 size={12} /> Tabs
+      </button>
+      <button
+        onClick={() => setViewMode('desktop')}
+        title="NeuroDesk — windowed view"
+        className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-mono rounded-t transition-colors ${
+          viewMode === 'desktop' ? 'text-neuro-cyan bg-neuro-bg border border-b-0 border-neuro-border' : 'text-gray-500 hover:text-gray-300'
+        }`}
+      >
+        <LayoutGrid size={12} /> NeuroDesk
+      </button>
+    </div>
+  );
+
+  if (viewMode === 'desktop') {
+    return (
+      <div className="flex flex-col h-full">
+        {ViewToggle}
+        <div className="flex-1 min-h-0">
+          <DesktopCanvas tabs={tabs} onCloseTab={closeTab} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full">
+      {ViewToggle}
       {/* Tab bar */}
       <TerminalTabs
         tabs={tabs}

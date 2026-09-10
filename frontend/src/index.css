@@ -29,6 +29,13 @@ body {
   height: 100% !important;
 }
 
+/* NeuroDesk — Kasm-style dotted virtual desktop background */
+.neurodesk-grid {
+  background-color: #0a0e14;
+  background-image: radial-gradient(circle, #1c2530 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
