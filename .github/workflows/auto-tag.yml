@@ -1,0 +1,43 @@
+name: Auto Tag Release
+
+# Every merge to main gets its own version + published GHCR images —
+# no more manual `git tag` step, no more stale `:latest`.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Bump version and tag
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine next version
+        id: version
+        run: |
+          git fetch --tags --force
+          latest=$(git tag -l 'v*.*.*' | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n1)
+          if [ -z "$latest" ]; then
+            latest="v0.0.0"
+          fi
+          ver="${latest#v}"
+          IFS='.' read -r major minor patch <<< "$ver"
+          next="v${major}.${minor}.$((patch + 1))"
+          echo "Latest tag: $latest -> next: $next"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$NEXT_VERSION" "${{ github.sha }}"
+          git push origin "$NEXT_VERSION"
