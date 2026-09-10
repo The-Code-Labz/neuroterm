@@ -2,27 +2,67 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { AlertTriangle } from 'lucide-react';
 import { useTerminalSocket, type SocketStatus } from '../../hooks/useTerminalSocket';
 import { useSessionStore } from '../../store/session-store';
+import { announce } from '../../store/live-region-store';
+import StatusIndicator from '../ui/StatusIndicator';
 
 interface XtermPaneProps {
   tabId: string;
   sessionId: string;
   active: boolean;
+  /** 'tab' renders its own status bar (Tabs view). 'window' suppresses it —
+   * NeuroDesk's title bar already carries connection status, and rendering
+   * both was duplicate chrome. */
+  chrome?: 'tab' | 'window';
+  title?: string;
 }
 
-export default function XtermPane({ tabId, sessionId, active }: XtermPaneProps): JSX.Element {
+const XTERM_THEME = {
+  background: '#090B0D',
+  foreground: '#D8DEE4',
+  cursor: '#79D3C4',
+  cursorAccent: '#090B0D',
+  selectionBackground: 'rgba(103, 199, 184, 0.24)',
+  black: '#30373E',
+  red: '#E78284',
+  green: '#8FCB8F',
+  yellow: '#E5C07B',
+  blue: '#7AA2D6',
+  magenta: '#B998D6',
+  cyan: '#6FC3BE',
+  white: '#D5D9DE',
+  brightBlack: '#46525D',
+  brightRed: '#E78284',
+  brightGreen: '#8FCB8F',
+  brightYellow: '#E5C07B',
+  brightBlue: '#7AA2D6',
+  brightMagenta: '#B998D6',
+  brightCyan: '#6FC3BE',
+  brightWhite: '#F2F5F7',
+};
+
+export default function XtermPane({ tabId, sessionId, active, chrome = 'tab', title }: XtermPaneProps): JSX.Element {
   const containerRef  = useRef<HTMLDivElement>(null);
   const termRef       = useRef<Terminal | null>(null);
   const fitAddonRef   = useRef<FitAddon | null>(null);
   const [terminal, setTerminal]   = useState<Terminal | null>(null);
   const [status, setStatus]       = useState<SocketStatus>('connecting');
+  const prevStatus                = useRef<SocketStatus>('connecting');
   const updateTabStatus           = useSessionStore((s) => s.updateTabStatus);
 
   const onStatusChange = useCallback((s: SocketStatus) => {
     setStatus(s);
     updateTabStatus(tabId, s === 'connected' ? 'connected' : s === 'reconnecting' ? 'reconnecting' : s === 'disconnected' ? 'disconnected' : 'connecting');
-  }, [tabId, updateTabStatus]);
+    if (prevStatus.current !== s) {
+      const label = title ? `${title} ` : '';
+      if (s === 'connected') announce(`${label}connected`);
+      else if (s === 'reconnecting') announce(`${label}reconnecting — tmux session is still running`);
+      else if (s === 'disconnected') announce(`${label}disconnected`);
+      prevStatus.current = s;
+    }
+  }, [tabId, title, updateTabStatus]);
 
   // NOTE: `enabled` is intentionally NOT tied to `active`. All panes stay
   // mounted with only the active one visible (see TerminalPage), and the
@@ -46,29 +86,7 @@ export default function XtermPane({ tabId, sessionId, active }: XtermPaneProps):
       cursorStyle: 'block',
       fontSize: 14,
       fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-      theme: {
-        background:       '#0d1117',
-        foreground:       '#c9d1d9',
-        cursor:           '#00ff41',
-        cursorAccent:     '#0d1117',
-        black:            '#484f58',
-        red:              '#ff7b72',
-        green:            '#3fb950',
-        yellow:           '#d29922',
-        blue:             '#58a6ff',
-        magenta:          '#bc8cff',
-        cyan:             '#39c5cf',
-        white:            '#b1bac4',
-        brightBlack:      '#6e7681',
-        brightRed:        '#ffa198',
-        brightGreen:      '#56d364',
-        brightYellow:     '#e3b341',
-        brightBlue:       '#79c0ff',
-        brightMagenta:    '#d2a8ff',
-        brightCyan:       '#56d4dd',
-        brightWhite:      '#f0f6fc',
-        selectionBackground: '#264f78',
-      },
+      theme: XTERM_THEME,
       allowTransparency: false,
       scrollback: 5000,
     });
@@ -166,42 +184,25 @@ export default function XtermPane({ tabId, sessionId, active }: XtermPaneProps):
     return () => clearTimeout(timer);
   }, [active, sendResize]);
 
-  return (
-    <div className="relative w-full h-full bg-neuro-bg" style={{ display: active ? 'flex' : 'none', flexDirection: 'column' }}>
-      {/* Status bar */}
-      <div className="flex items-center gap-2 px-3 py-1 bg-neuro-panel border-b border-neuro-border text-xs font-mono">
-        <span className={`w-2 h-2 rounded-full ${
-          status === 'connected'    ? 'bg-neuro-green animate-pulse' :
-          status === 'reconnecting' ? 'bg-neuro-yellow animate-pulse' :
-          status === 'disconnected' ? 'bg-neuro-red' :
-          'bg-gray-500 animate-pulse'
-        }`} />
-        <span className={
-          status === 'connected'    ? 'text-neuro-green' :
-          status === 'reconnecting' ? 'text-neuro-yellow' :
-          status === 'disconnected' ? 'text-neuro-red' :
-          'text-gray-400'
-        }>
-          {status === 'connected'    ? 'connected — tmux persistent' :
-           status === 'reconnecting' ? 'reconnecting...' :
-           status === 'disconnected' ? 'disconnected' :
-           'connecting...'}
-        </span>
-      </div>
+  const showReconnectBanner = chrome === 'tab' && (status === 'reconnecting' || status === 'connecting');
 
-      {/* Terminal */}
+  return (
+    <div className="relative w-full h-full bg-termbg" style={{ display: active ? 'flex' : 'none', flexDirection: 'column' }}>
+      {chrome === 'tab' && (
+        <div className="flex-shrink-0 flex items-center gap-2 px-3 h-7 bg-surface2 border-b border-edge-subtle text-meta">
+          <StatusIndicator status={status} showLabel />
+        </div>
+      )}
+
+      {/* Terminal — never covered by a blocking overlay; the last rendered
+       * frame stays visible through a reconnect. */}
       <div ref={containerRef} className="flex-1 overflow-hidden" />
 
-      {/* Reconnecting overlay */}
-      {(status === 'reconnecting' || status === 'connecting') && (
-        <div className="absolute inset-0 flex items-center justify-center bg-neuro-bg/60 backdrop-blur-sm pointer-events-none"
-             style={{ top: '28px' }}>
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-8 h-8 border-2 border-neuro-cyan border-t-transparent rounded-full animate-spin" />
-            <span className="text-neuro-cyan text-sm font-mono">
-              {status === 'reconnecting' ? 'Reconnecting... (tmux session alive)' : 'Connecting...'}
-            </span>
-          </div>
+      {/* Slim, non-blocking reconnect banner instead of a blurred overlay. */}
+      {showReconnectBanner && (
+        <div className="absolute left-2 right-2 bottom-2 flex items-center gap-2 px-3 py-2 rounded-md bg-warning/10 border border-warning/30 text-meta text-warning pointer-events-none">
+          <AlertTriangle size={13} strokeWidth={1.75} className="flex-shrink-0" />
+          {status === 'reconnecting' ? 'Reconnecting — tmux session is still running.' : 'Connecting…'}
         </div>
       )}
     </div>
