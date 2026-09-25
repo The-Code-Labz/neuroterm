@@ -110,6 +110,39 @@ export interface TmuxSessionInfo {
   created: string;
 }
 
+export type FileScope = { mode: 'local' } | { mode: 'ssh'; connection_id: string };
+
+export interface FileEntryInfo {
+  name: string;
+  type: 'file' | 'dir' | 'other';
+  size: number;
+  mtime: number;
+}
+
+export interface ListFilesResult {
+  path: string;
+  entries: FileEntryInfo[];
+}
+
+export interface ReadFileResult {
+  path: string;
+  binary: boolean;
+  content?: string;
+  size: number;
+  mtime: number;
+  truncated: boolean;
+}
+
+function qs(params: Record<string, string | undefined>): string {
+  const usp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined) usp.set(k, v);
+  return usp.toString();
+}
+
+function scopeParams(scope: FileScope): Record<string, string> {
+  return scope.mode === 'ssh' ? { mode: 'ssh', connection_id: scope.connection_id } : { mode: 'local' };
+}
+
 // ── API ───────────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -144,5 +177,20 @@ export const api = {
     tmux:   ()                        => req<TmuxSessionInfo[]>('GET', '/api/sessions/tmux'),
     create: (p: CreateSessionPayload) => req<ApiSession>('POST', '/api/sessions', p),
     close:  (id: string)              => req<void>('POST', `/api/sessions/${id}/close`),
+  },
+
+  files: {
+    list: (scope: FileScope, path: string) =>
+      req<ListFilesResult>('GET', `/api/files/list?${qs({ ...scopeParams(scope), path })}`),
+    read: (scope: FileScope, path: string) =>
+      req<ReadFileResult>('GET', `/api/files/read?${qs({ ...scopeParams(scope), path })}`),
+    write: (scope: FileScope, path: string, content: string) =>
+      req<{ path: string; size: number; mtime: number }>('POST', '/api/files/write', { ...scopeParams(scope), path, content }),
+    mkdir: (scope: FileScope, path: string) =>
+      req<{ path: string }>('POST', '/api/files/mkdir', { ...scopeParams(scope), path }),
+    delete: (scope: FileScope, path: string, recursive = false) =>
+      req<void>('POST', '/api/files/delete', { ...scopeParams(scope), path, recursive }),
+    rename: (scope: FileScope, path: string, newPath: string) =>
+      req<{ path: string }>('POST', '/api/files/rename', { ...scopeParams(scope), path, new_path: newPath }),
   },
 };

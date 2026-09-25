@@ -6,6 +6,7 @@ import { TmuxService } from '../../src/services/tmux-service';
 import { connectionsRouter } from '../../src/api/connections.routes';
 import { sessionsRouter } from '../../src/api/sessions.routes';
 import { credentialsRouter } from '../../src/api/credentials.routes';
+import { filesRouter } from '../../src/api/files.routes';
 import { authRouter } from '../../src/api/auth.routes';
 import { createAuthMiddleware } from '../../src/middleware/auth';
 
@@ -46,13 +47,17 @@ export function buildTestApp(): TestAppContext {
   // test in this process. `trust proxy` + a unique X-Forwarded-For per test
   // (see `registerUser`) keeps tests from tripping each other's rate limit.
   app.set('trust proxy', true);
-  app.use(express.json());
+  // Matches index.ts's 8mb limit — files.routes.ts enforces its own 5MB
+  // MAX_FILE_BYTES check inside the route handler, which only runs if
+  // body-parser's own limit doesn't reject the request first.
+  app.use(express.json({ limit: '8mb' }));
 
   const authMiddleware = createAuthMiddleware(db);
   app.use('/api/auth', authRouter(db));
   app.use('/api/credentials', authMiddleware, credentialsRouter(db, crypto));
   app.use('/api/connections', authMiddleware, connectionsRouter(db, crypto));
   app.use('/api/sessions',    authMiddleware, sessionsRouter(db, tmux, () => { /* no-op */ }));
+  app.use('/api/files',       authMiddleware, filesRouter(db, crypto));
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

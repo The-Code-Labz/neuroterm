@@ -4,7 +4,7 @@ import { persist } from 'zustand/middleware';
 export type ConnectionMode  = 'ssh' | 'local';
 export type AuthMode        = 'password' | 'privateKey';
 export type TerminalStatus  = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
-export type TerminalViewMode = 'tabs' | 'desktop';
+export type TerminalViewMode = 'tabs' | 'desktop' | 'explorer';
 
 export interface WindowLayout {
   x: number;

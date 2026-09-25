@@ -8,6 +8,7 @@ import type { CryptoService } from '../services/crypto-service';
 import { TmuxService, isValidTmuxSessionName } from '../services/tmux-service';
 import { canAccessOwner, type AuthContext } from '../middleware/auth';
 import { clampDims } from '../utils/terminal-dims';
+import { resolveConnectionAuth, makeHostVerifier, type ResolvedConnection } from '../services/ssh-auth';
 
 // ─── Wire protocol ────────────────────────────────────────────────────────────
 
@@ -130,28 +131,12 @@ export function handleTerminalWs(
 
     // ── Resolve auth source ─────────────────────────────────────────────────
     // If the connection references a saved credential, load auth from there.
-    // Otherwise use the auth stored directly on the connection row.
-    let authRow: Record<string, unknown> = connection;
+    // Otherwise use the auth stored directly on the connection row. Shared
+    // with services/sftp-client.ts so the merge logic can't drift between
+    // the interactive-shell and file-explorer code paths.
+    const resolved = resolveConnectionAuth(db, crypto, connection);
 
-    const credentialId = connection['credential_id'] as string | null;
-    if (credentialId) {
-      const credential = db.prepare(
-        `SELECT * FROM credentials WHERE id = ?`
-      ).get(credentialId) as Record<string, unknown> | undefined;
-
-      if (credential) {
-        // Use credential's auth fields but keep connection's host/port/username
-        authRow = {
-          ...connection,
-          auth_type:       credential['auth_type'],
-          password_enc:    credential['password_enc'],
-          private_key_enc: credential['private_key_enc'],
-          passphrase_enc:  credential['passphrase_enc'],
-        };
-      }
-    }
-
-    spawnSshTmux({ ws, db, crypto, tmux, connection: authRow, tmuxSession, cols, rows, sessionId, pingInterval });
+    spawnSshTmux({ ws, db, resolved, tmux, tmuxSession, cols, rows, sessionId, pingInterval });
   }
 }
 
@@ -236,9 +221,8 @@ function spawnLocalTmux(opts: LocalOpts): void {
 interface SshOpts {
   ws: WebSocket;
   db: AppDatabase;
-  crypto: CryptoService;
+  resolved: ResolvedConnection;
   tmux: TmuxService;
-  connection: Record<string, unknown>;
   tmuxSession: string;
   cols: number;
   rows: number;
@@ -247,16 +231,11 @@ interface SshOpts {
 }
 
 function spawnSshTmux(opts: SshOpts): void {
-  const { ws, db, crypto, connection, tmuxSession, cols, rows, pingInterval } = opts;
+  const { ws, db, resolved, tmuxSession, cols, rows, pingInterval } = opts;
 
   const sshClient = new SSHClient();
 
-  const connectionId = connection['id'] as string;
-  const host     = connection['host'] as string;
-  const port     = (connection['port'] as number) || 22;
-  const username = connection['username'] as string;
-  const authType = connection['auth_type'] as string;
-  const pinnedFingerprint = connection['host_key_fingerprint'] as string | null;
+  const { host, port, username, authType } = resolved;
 
   // TOFU (trust-on-first-use) host-key pinning: the server's key hash is
   // pinned to this connection on first successful handshake. Any later
@@ -270,48 +249,41 @@ function spawnSshTmux(opts: SshOpts): void {
     readyTimeout: 20_000,
     keepaliveInterval: 10_000,
     hostHash: 'sha256',
-    hostVerifier: (hashedKey: string): boolean => {
-      if (!pinnedFingerprint) {
-        db.prepare(`UPDATE connections SET host_key_fingerprint = ? WHERE id = ?`).run(hashedKey, connectionId);
+    hostVerifier: makeHostVerifier(db, resolved, {
+      onNewKey: (hashedKey) => {
         send(ws, {
           type: 'output',
           data: `\r\n\x1b[33m⚠ New host key for ${host}:${port} — pinned as SHA256:${hashedKey}\x1b[0m\r\n`,
         });
-        return true;
-      }
-      if (hashedKey !== pinnedFingerprint) {
+      },
+      onMismatch: (hashedKey) => {
         send(ws, {
           type: 'error',
           code: 'HOST_KEY_MISMATCH',
-          message: `Host key for ${host}:${port} does not match the pinned key — refusing to connect (possible MITM). ` +
+          message: `Host key for ${host}:${port} does not match the pinned key (SHA256:${hashedKey}) — refusing to connect (possible MITM). ` +
             `If this host was legitimately reprovisioned, clear its pinned key on the connection and reconnect.`,
         });
-        return false;
-      }
-      return true;
-    },
+      },
+    }),
   };
 
   if (authType === 'private_key') {
-    const privateKey = crypto.decrypt(connection['private_key_enc'] as string);
-    const passphrase = crypto.decrypt(connection['passphrase_enc'] as string);
-    if (!privateKey) {
+    if (!resolved.privateKey) {
       send(ws, { type: 'error', code: 'NO_KEY', message: 'Private key not found — check saved credential' });
       clearInterval(pingInterval);
       ws.close();
       return;
     }
-    connectConfig.privateKey = privateKey;
-    if (passphrase) connectConfig.passphrase = passphrase;
+    connectConfig.privateKey = resolved.privateKey;
+    if (resolved.passphrase) connectConfig.passphrase = resolved.passphrase;
   } else {
-    const password = crypto.decrypt(connection['password_enc'] as string);
-    if (!password) {
+    if (!resolved.password) {
       send(ws, { type: 'error', code: 'NO_PASSWORD', message: 'Password not found — check saved credential' });
       clearInterval(pingInterval);
       ws.close();
       return;
     }
-    connectConfig.password = password;
+    connectConfig.password = resolved.password;
   }
 
   sshClient.on('ready', () => {

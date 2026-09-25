@@ -8,8 +8,10 @@ import { TmuxService } from './services/tmux-service';
 import { connectionsRouter } from './api/connections.routes';
 import { sessionsRouter } from './api/sessions.routes';
 import { credentialsRouter } from './api/credentials.routes';
+import { filesRouter } from './api/files.routes';
 import { authRouter } from './api/auth.routes';
 import { handleTerminalWs, closeSession } from './ws/terminal-ws';
+import { handleFilesWs } from './ws/files-ws';
 import {
   createAuthMiddleware,
   resolveWsAuthContext,
@@ -54,7 +56,11 @@ app.set('trust proxy', 1);
 // for no benefit. The other helmet defaults (X-Content-Type-Options,
 // X-Frame-Options, HSTS when TLS-terminated, etc.) still apply.
 app.use(helmet({ contentSecurityPolicy: false }));
-app.use(express.json({ limit: '2mb' }));
+// 8mb (not 2mb) to accommodate the file-explorer's /api/files/write body —
+// edited files are capped at 5MB (see MAX_FILE_BYTES in files.routes.ts);
+// every other route's payloads are tiny, so this is just a higher ceiling,
+// not a new capability for them.
+app.use(express.json({ limit: '8mb' }));
 
 app.use((req, _res, next) => {
   console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
@@ -75,6 +81,7 @@ const crudRateLimit  = rateLimit({ windowMs: 60_000, max: 300, message: 'Too man
 app.use('/api/credentials', authMiddleware, crudRateLimit, credentialsRouter(db, crypto));
 app.use('/api/connections', authMiddleware, crudRateLimit, connectionsRouter(db, crypto));
 app.use('/api/sessions',    authMiddleware, crudRateLimit, sessionsRouter(db, tmux, closeSession));
+app.use('/api/files',       authMiddleware, crudRateLimit, filesRouter(db, crypto));
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -107,7 +114,9 @@ const wss = new WebSocketServer({
 });
 
 httpServer.on('upgrade', (req, socket, head) => {
-  if (!req.url?.startsWith('/ws/terminal/')) {
+  const isTerminal = req.url?.startsWith('/ws/terminal/');
+  const isFiles    = req.url?.startsWith('/ws/files/');
+  if (!isTerminal && !isFiles) {
     socket.destroy();
     return;
   }
@@ -120,7 +129,11 @@ httpServer.on('upgrade', (req, socket, head) => {
   }
 
   wss.handleUpgrade(req, socket, head, (ws) => {
-    handleTerminalWs(ws, req, { db, crypto, tmux, auth });
+    if (isTerminal) {
+      handleTerminalWs(ws, req, { db, crypto, tmux, auth });
+    } else {
+      handleFilesWs(ws, req, { db, crypto, auth });
+    }
   });
 });
 
