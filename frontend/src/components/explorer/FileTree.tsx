@@ -62,6 +62,32 @@ export default function FileTree({
     }
   }, [scope, watch]);
 
+  // Background refresh for an already-open directory (triggered by the watch
+  // WS reporting a change). Unlike loadDir, this never flips `loading` — the
+  // currently rendered entries (and every expanded descendant's own state,
+  // which this never touches) stay on screen the whole time, and only the
+  // entry list itself is swapped once the refetch resolves. Flipping
+  // `loading` here previously blanked the ENTIRE visible subtree (see render:
+  // children only render when `!node.loading`), so any directory with
+  // frequent write activity nearby made the whole explorer appear to flicker
+  // empty every few seconds.
+  const refreshDir = useCallback(async (path: string) => {
+    try {
+      const result = await api.files.list(scope, path);
+      setNodes((prev) => {
+        const existing = prev[path];
+        if (!existing) return prev; // no longer tracked (e.g. collapsed/unmounted since)
+        return { ...prev, [path]: { ...existing, entries: result.entries, error: null } };
+      });
+    } catch (err) {
+      setNodes((prev) => {
+        const existing = prev[path];
+        if (!existing) return prev;
+        return { ...prev, [path]: { ...existing, error: (err as Error).message } };
+      });
+    }
+  }, [scope]);
+
   // Root changes (switching which session's filesystem is browsed) — reset
   // everything and resolve the new root fresh. The very first fetch uses
   // whatever `rootPathRequest` was given ('' asks the backend for its own
@@ -92,10 +118,12 @@ export default function FileTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, rootPathRequest]);
 
-  // Reload a directory when the watch connection reports a change inside it.
+  // Refresh a directory in the background when the watch connection reports
+  // a change inside it — never blanks what's already on screen (see
+  // refreshDir above).
   useEffect(() => {
     if (!changeSignal) return;
-    if (nodes[changeSignal.path]?.expanded) void loadDir(changeSignal.path, true);
+    if (nodes[changeSignal.path]?.expanded) void refreshDir(changeSignal.path);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [changeSignal]);
 
