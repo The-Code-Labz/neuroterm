@@ -68,8 +68,18 @@ export function handleFilesWs(ws: WebSocket, req: IncomingMessage, opts: FilesWs
 
 // ─── Local ──────────────────────────────────────────────────────────────────
 
+// Coalesces bursts of fs.watch callbacks into a single 'change' message.
+// A single save can fire fs.watch multiple times (rename + change events for
+// swap/temp files, editors writing via a temp-file-then-rename dance, etc.),
+// and directories with unrelated frequent write activity nearby (logs, build
+// output) can fire continuously. Without this, the client refetched on every
+// single OS event; the debounce keeps the "background" refresh infrequent
+// enough to never be disruptive even under sustained write activity.
+const LOCAL_WATCH_DEBOUNCE_MS = 500;
+
 function startLocalWatch(ws: WebSocket): void {
   const watchers = new Map<string, FSWatcher>();
+  const pending = new Map<string, ReturnType<typeof setTimeout>>();
 
   send(ws, { type: 'ready' });
 
@@ -81,7 +91,12 @@ function startLocalWatch(ws: WebSocket): void {
       if (watchers.has(msg.path)) return;
       try {
         const watcher = fsWatch(msg.path, () => {
-          send(ws, { type: 'change', path: msg.path });
+          const existing = pending.get(msg.path);
+          if (existing) clearTimeout(existing);
+          pending.set(msg.path, setTimeout(() => {
+            pending.delete(msg.path);
+            send(ws, { type: 'change', path: msg.path });
+          }, LOCAL_WATCH_DEBOUNCE_MS));
         });
         watcher.on('error', () => {
           watchers.delete(msg.path);
@@ -93,6 +108,8 @@ function startLocalWatch(ws: WebSocket): void {
     } else if (msg.type === 'unwatch') {
       const watcher = watchers.get(msg.path);
       if (watcher) { try { watcher.close(); } catch { /* ignore */ } watchers.delete(msg.path); }
+      const timer = pending.get(msg.path);
+      if (timer) { clearTimeout(timer); pending.delete(msg.path); }
     } else if (msg.type === 'ping') {
       send(ws, { type: 'pong' });
     }
@@ -101,6 +118,8 @@ function startLocalWatch(ws: WebSocket): void {
   ws.on('close', () => {
     for (const watcher of watchers.values()) { try { watcher.close(); } catch { /* ignore */ } }
     watchers.clear();
+    for (const timer of pending.values()) clearTimeout(timer);
+    pending.clear();
   });
 }
 
