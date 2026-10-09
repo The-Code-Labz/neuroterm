@@ -25,3 +25,25 @@ export function clampDims(cols: number, rows: number): { cols: number; rows: num
     rows: Math.min(MAX_ROWS, Math.max(MIN_ROWS, Math.floor(rows) || MIN_ROWS)),
   };
 }
+
+// Coalesces rapid-fire 'resize' messages (dragging a NeuroDesk window,
+// browser window resize, frontend ResizeObserver churn) into one actual
+// pty/tmux resize per settle. Each resize call is a real SIGWINCH — tmux
+// immediately reflows and fully repaints every attached client — so firing
+// it on every single intermediate frame of a drag made the terminal look
+// like it kept "resetting" (one resize's redraw getting stomped by the
+// next before it finished, especially inside a full-screen app like nano).
+// 'init' (the one-shot size sent right after connect) is applied
+// immediately, uncoalesced — only ongoing 'resize' messages are debounced.
+export const RESIZE_DEBOUNCE_MS = 80;
+
+export function debounceResize(
+  apply: (cols: number, rows: number) => void,
+  delayMs: number = RESIZE_DEBOUNCE_MS
+): (cols: number, rows: number) => void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return (cols, rows) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { timer = null; apply(cols, rows); }, delayMs);
+  };
+}
