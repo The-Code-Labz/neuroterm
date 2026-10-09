@@ -7,7 +7,7 @@ import type { AppDatabase } from '../db/sqlite';
 import type { CryptoService } from '../services/crypto-service';
 import { TmuxService, isValidTmuxSessionName } from '../services/tmux-service';
 import { canAccessOwner, type AuthContext } from '../middleware/auth';
-import { clampDims } from '../utils/terminal-dims';
+import { clampDims, debounceResize } from '../utils/terminal-dims';
 import { resolveConnectionAuth, makeHostVerifier, type ResolvedConnection } from '../services/ssh-auth';
 
 // ─── Wire protocol ────────────────────────────────────────────────────────────
@@ -99,6 +99,19 @@ export function handleTerminalWs(
     return;
   }
 
+  // Kill any runtime (pty / SSH stream) still attached to this session from
+  // a previous WebSocket before spawning a new one. Without this, a client
+  // reconnect (flaky network, idle-proxy timeout, tab reload) raced the old
+  // connection's own `ws.on('close')` teardown: for a window the OLD and NEW
+  // attach clients were both live on the SAME tmux session simultaneously,
+  // each at a different size. tmux has no "aggressive-resize" by default,
+  // so it reflows the whole session to match the smallest attached client
+  // every time the attach set changes — then reflows again when the old one
+  // finally dies. Every reconnect produced exactly the garbled
+  // overlapping-redraw symptom this fixes: forcing a single attach client
+  // per session, synchronously, before the new one spawns.
+  closeSession(sessionId);
+
   // Mark last connected
   db.prepare(`UPDATE terminal_sessions SET last_connected_at = ?, updated_at = ? WHERE id = ?`)
     .run(new Date().toISOString(), new Date().toISOString(), sessionId);
@@ -185,6 +198,12 @@ function spawnLocalTmux(opts: LocalOpts): void {
     ws.close();
   });
 
+  const applyResize = debounceResize((c, r) => {
+    const d = clampDims(c, r);
+    ptyProcess.resize(d.cols, d.rows);
+    persistDims(db, opts.sessionId, d.cols, d.rows);
+  });
+
   // Browser → PTY
   ws.on('message', (raw) => {
     let msg: ClientMessage;
@@ -192,13 +211,13 @@ function spawnLocalTmux(opts: LocalOpts): void {
 
     switch (msg.type) {
       case 'input':  ptyProcess.write(msg.data); break;
-      case 'init':
-      case 'resize': {
+      case 'init': {
         const d = clampDims(msg.cols, msg.rows);
         ptyProcess.resize(d.cols, d.rows);
         persistDims(db, opts.sessionId, d.cols, d.rows);
         break;
       }
+      case 'resize': applyResize(msg.cols, msg.rows); break;
       case 'ping':   send(ws, { type: 'pong' }); break;
       case 'close':
       case 'detach':
@@ -333,6 +352,12 @@ function spawnSshTmux(opts: SshOpts): void {
         ws.close();
       });
 
+      const applyResize = debounceResize((c, r) => {
+        const d = clampDims(c, r);
+        stream.setWindow(d.rows, d.cols, 0, 0);
+        persistDims(db, opts.sessionId, d.cols, d.rows);
+      });
+
       // Browser → stream
       ws.on('message', (raw) => {
         let msg: ClientMessage;
@@ -340,13 +365,13 @@ function spawnSshTmux(opts: SshOpts): void {
 
         switch (msg.type) {
           case 'input':  stream.write(msg.data); break;
-          case 'init':
-          case 'resize': {
+          case 'init': {
             const d = clampDims(msg.cols, msg.rows);
             stream.setWindow(d.rows, d.cols, 0, 0);
             persistDims(db, opts.sessionId, d.cols, d.rows);
             break;
           }
+          case 'resize': applyResize(msg.cols, msg.rows); break;
           case 'ping':   send(ws, { type: 'pong' }); break;
           case 'detach': stream.write('q'); break;
           case 'close':  stream.close(); break;

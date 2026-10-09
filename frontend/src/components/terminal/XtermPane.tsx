@@ -155,18 +155,35 @@ export default function XtermPane({ tabId, sessionId, active, chrome = 'tab', ti
     const container = containerRef.current;
     if (!container) return;
 
+    // Debounced: every fit()+sendResize() round-trip is a real SIGWINCH to
+    // the backing pty/tmux session, which reflows and fully repaints every
+    // attached client immediately. A live drag (NeuroDesk window resize,
+    // browser window resize) fires this callback many times per second —
+    // without debouncing, each intermediate frame triggered its own tmux
+    // redraw, and a full-screen app (nano, htop) mid-repaint from one
+    // resize getting stomped by the next looked exactly like the terminal
+    // randomly "resetting"/corrupting itself. Only fit+resize once the size
+    // has settled.
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
     const observer = new ResizeObserver(() => {
       if (!active) return;
-      if (!fitAddonRef.current || !termRef.current) return;
-      if (container.clientWidth === 0 || container.clientHeight === 0) return;
-      try {
-        fitAddonRef.current.fit();
-        sendResize(termRef.current.cols, termRef.current.rows);
-      } catch { /* ignore */ }
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        settleTimer = null;
+        if (!fitAddonRef.current || !termRef.current) return;
+        if (container.clientWidth === 0 || container.clientHeight === 0) return;
+        try {
+          fitAddonRef.current.fit();
+          sendResize(termRef.current.cols, termRef.current.rows);
+        } catch { /* ignore */ }
+      }, 120);
     });
 
     observer.observe(container);
-    return () => observer.disconnect();
+    return () => {
+      if (settleTimer) clearTimeout(settleTimer);
+      observer.disconnect();
+    };
   }, [active, sendResize]);
 
   // Re-fit on activation (tab regains focus / becomes visible again)

@@ -3,6 +3,7 @@ import { basicSetup } from 'codemirror';
 import { EditorState, Compartment } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { indentWithTab } from '@codemirror/commands';
+import { selectSelectionMatches } from '@codemirror/search';
 import { LanguageDescription } from '@codemirror/language';
 import { languages } from '@codemirror/language-data';
 import { fieldConsoleEditorTheme } from './editorTheme';
@@ -30,6 +31,19 @@ export default function CodeEditor({ path, initialContent, onChange, onSave }: C
   useEffect(() => {
     if (!containerRef.current) return;
 
+    // basicSetup's defaultKeymap/searchKeymap already cover most VS Code
+    // muscle memory (Mod-d select-next-occurrence, Ctrl/Cmd-Alt-Up/Down add
+    // cursor above/below, Alt-Up/Down move line, Shift-Alt-Up/Down duplicate
+    // line, Escape simplify-selection). The one VS Code staple missing —
+    // "select every occurrence of the current word/selection at once" so
+    // typing replaces them all (no LSP rename available here) — is F2 here,
+    // since real rename-symbol doesn't apply without a language server.
+    // Mod-Shift-l mirrors VS Code's own binding for the same action.
+    const vscodeKeymap = keymap.of([
+      { key: 'F2', preventDefault: true, run: selectSelectionMatches },
+      { key: 'Mod-Shift-l', preventDefault: true, run: selectSelectionMatches },
+    ]);
+
     const saveKeymap = keymap.of([
       { key: 'Mod-s', preventDefault: true, run: () => { onSaveRef.current(); return true; } },
       indentWithTab,
@@ -39,6 +53,7 @@ export default function CodeEditor({ path, initialContent, onChange, onSave }: C
       doc: initialContent,
       extensions: [
         basicSetup,
+        vscodeKeymap,
         saveKeymap,
         fieldConsoleEditorTheme,
         languageCompartment.of([]),
