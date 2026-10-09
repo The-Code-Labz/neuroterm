@@ -53,6 +53,39 @@ export async function removeRecursive(backend: FileBackend, path: string): Promi
   }
 }
 
+/** Recursively copy a file or directory tree using only the FileBackend
+ *  primitives — works identically for local and SFTP backends. Never
+ *  silently overwrites: a directory collision surfaces as EEXIST via
+ *  `mkdir` itself, and a file collision is checked explicitly (unlike
+ *  `mkdir`, `writeFile` has no native "fail if exists" mode). `maxBytes`
+ *  bounds each individual file read the same way the REST edit endpoints
+ *  are bounded — this isn't a bulk-transfer tool. */
+export async function copyRecursive(
+  backend: FileBackend,
+  srcPath: string,
+  destPath: string,
+  maxBytes: number
+): Promise<void> {
+  const info = await backend.stat(srcPath);
+  if (info.type === 'dir') {
+    await backend.mkdir(destPath); // throws EEXIST if destPath already exists
+    const entries = await backend.list(srcPath);
+    for (const entry of entries) {
+      await copyRecursive(backend, joinPath(srcPath, entry.name), joinPath(destPath, entry.name), maxBytes);
+    }
+  } else {
+    let exists = true;
+    try {
+      await backend.stat(destPath);
+    } catch {
+      exists = false;
+    }
+    if (exists) throw Object.assign(new Error('Path already exists'), { code: 'EEXIST' });
+    const { buffer } = await backend.readFile(srcPath, maxBytes);
+    await backend.writeFile(destPath, buffer);
+  }
+}
+
 // ─── Local backend ────────────────────────────────────────────────────────────
 
 export function localBackend(): FileBackend {

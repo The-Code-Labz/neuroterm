@@ -3,10 +3,10 @@ import { AlertTriangle, Save, RotateCcw, FolderTree } from 'lucide-react';
 import { useSessionStore, type TerminalTab } from '../../store/session-store';
 import { api, type FileScope } from '../../lib/api';
 import { useFileWatch } from '../../hooks/useFileWatch';
-import FileTree from './FileTree';
+import FileTree, { type ClipboardEntry } from './FileTree';
 import EditorTabs from './EditorTabs';
 import CodeEditor from './CodeEditor';
-import NewFileDialog from './NewFileDialog';
+import PromptDialog from './PromptDialog';
 import ConfirmDialog from '../ui/ConfirmDialog';
 import XtermPane from '../terminal/XtermPane';
 import Select from '../ui/Select';
@@ -39,6 +39,34 @@ function joinPath(base: string, name: string): string {
   return base.endsWith('/') ? `${base}${name}` : `${base}/${name}`;
 }
 
+function parentOf(path: string): string {
+  const idx = path.lastIndexOf('/');
+  return idx > 0 ? path.slice(0, idx) : '/';
+}
+
+function suffixName(baseName: string, n: number): string {
+  const dot = baseName.lastIndexOf('.');
+  return dot > 0 ? `${baseName.slice(0, dot)} (${n})${baseName.slice(dot)}` : `${baseName} (${n})`;
+}
+
+/** Retries `attempt` with an auto-incremented, VS-Code-style suffix
+ *  ("name (1).ext", "name (2).ext", ...) whenever the backend reports a 409
+ *  name collision — used by Paste and Duplicate so the user never has to
+ *  manually resolve a naming conflict. Any other failure (permissions,
+ *  connection lost, etc.) propagates immediately. */
+async function withCollisionRetry(attempt: (candidateName: string) => Promise<unknown>, baseName: string): Promise<string> {
+  for (let i = 0; i <= 50; i++) {
+    const candidate = i === 0 ? baseName : suffixName(baseName, i);
+    try {
+      await attempt(candidate);
+      return candidate;
+    } catch (err) {
+      if (i === 50 || (err as { status?: number }).status !== 409) throw err;
+    }
+  }
+  throw new Error('Could not find a free name');
+}
+
 export default function ExplorerWorkspace({ tabs }: ExplorerWorkspaceProps): JSX.Element {
   const connections = useSessionStore((s) => s.connections);
   const [selectedTabId, setSelectedTabId] = useState<string | null>(tabs[0]?.id ?? null);
@@ -67,10 +95,14 @@ export default function ExplorerWorkspace({ tabs }: ExplorerWorkspaceProps): JSX
   const [newFileDialogDir, setNewFileDialogDir] = useState<string | null>(null);
   const [newFileBusy, setNewFileBusy] = useState(false);
   const [newFileError, setNewFileError] = useState<string | null>(null);
+  const [newFolderDialogDir, setNewFolderDialogDir] = useState<string | null>(null);
+  const [newFolderBusy, setNewFolderBusy] = useState(false);
+  const [newFolderError, setNewFolderError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ path: string; isDir: boolean } | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [closeConfirmPath, setCloseConfirmPath] = useState<string | null>(null);
-  const [changeSignal, setChangeSignal] = useState<{ path: string; tick: number } | null>(null);
+  const [changeSignal, setChangeSignal] = useState<{ paths: string[]; tick: number } | null>(null);
+  const [clipboard, setClipboard] = useState<ClipboardEntry | null>(null);
   const [showTerminal, setShowTerminal] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [terminalHeight, setTerminalHeight] = useState(220);
@@ -79,7 +111,7 @@ export default function ExplorerWorkspace({ tabs }: ExplorerWorkspaceProps): JSX
 
   const onWatchChange = useCallback((path: string) => {
     tickRef.current += 1;
-    setChangeSignal({ path, tick: tickRef.current });
+    setChangeSignal({ paths: [path], tick: tickRef.current });
     setOpenFiles((prev) => (prev[path] ? { ...prev, [path]: { ...prev[path], externalChange: true } } : prev));
   }, []);
 
@@ -169,7 +201,7 @@ export default function ExplorerWorkspace({ tabs }: ExplorerWorkspaceProps): JSX
       await api.files.write(scope, path, '');
       setNewFileDialogDir(null);
       tickRef.current += 1;
-      setChangeSignal({ path: newFileDialogDir, tick: tickRef.current });
+      setChangeSignal({ paths: [newFileDialogDir], tick: tickRef.current });
       openFile(path);
     } catch (err) {
       setNewFileError((err as Error).message);
@@ -178,15 +210,144 @@ export default function ExplorerWorkspace({ tabs }: ExplorerWorkspaceProps): JSX
     }
   }, [scope, newFileDialogDir, openFile]);
 
+  const handleCreateFolder = useCallback(async (folderName: string) => {
+    if (!scope || !newFolderDialogDir) return;
+    setNewFolderBusy(true);
+    setNewFolderError(null);
+    const path = joinPath(newFolderDialogDir, folderName);
+    try {
+      await api.files.mkdir(scope, path);
+      setNewFolderDialogDir(null);
+      tickRef.current += 1;
+      setChangeSignal({ paths: [newFolderDialogDir], tick: tickRef.current });
+    } catch (err) {
+      setNewFolderError((err as Error).message);
+    } finally {
+      setNewFolderBusy(false);
+    }
+  }, [scope, newFolderDialogDir]);
+
+  // Remaps every open editor tab under `oldPath` (itself, or — for a renamed/
+  // moved directory — anything nested beneath it) to the equivalent path
+  // under `newPath`, re-subscribing the file-watch for each. Shared by
+  // rename and cut-paste (move), which both relocate a path on disk without
+  // touching its content.
+  const remapOpenFiles = useCallback((oldPath: string, newPath: string, isDir: boolean) => {
+    setOpenFiles((prev) => {
+      const next: Record<string, OpenFile> = {};
+      for (const [p, f] of Object.entries(prev)) {
+        if (p === oldPath || (isDir && p.startsWith(`${oldPath}/`))) {
+          const remapped = newPath + p.slice(oldPath.length);
+          unwatch(p);
+          watch(remapped);
+          next[remapped] = { ...f, path: remapped };
+        } else {
+          next[p] = f;
+        }
+      }
+      return next;
+    });
+    setActiveFilePath((prev) => {
+      if (prev === oldPath) return newPath;
+      if (isDir && prev && prev.startsWith(`${oldPath}/`)) return newPath + prev.slice(oldPath.length);
+      return prev;
+    });
+    setClipboard((c) => (c && (c.path === oldPath || (isDir && c.path.startsWith(`${oldPath}/`))) ? null : c));
+  }, [watch, unwatch]);
+
+  const handleRenameEntry = useCallback(async (oldPath: string, isDir: boolean, newName: string) => {
+    if (!scope) return;
+    const parent = parentOf(oldPath);
+    const newPath = joinPath(parent, newName);
+    try {
+      await api.files.rename(scope, oldPath, newPath);
+      remapOpenFiles(oldPath, newPath, isDir);
+      tickRef.current += 1;
+      setChangeSignal({ paths: [parent], tick: tickRef.current });
+      announce(`Renamed to ${newName}`);
+    } catch (err) {
+      announce(`Rename failed: ${(err as Error).message}`);
+    }
+  }, [scope, remapOpenFiles]);
+
+  const handleDuplicateEntry = useCallback(async (path: string, isDir: boolean) => {
+    if (!scope) return;
+    const parent = parentOf(path);
+    const name = path.split('/').pop() ?? '';
+    const dot = !isDir ? name.lastIndexOf('.') : -1;
+    const baseCopyName = dot > 0 ? `${name.slice(0, dot)} copy${name.slice(dot)}` : `${name} copy`;
+    try {
+      const finalName = await withCollisionRetry(
+        (candidate) => api.files.copy(scope, path, joinPath(parent, candidate)),
+        baseCopyName
+      );
+      tickRef.current += 1;
+      setChangeSignal({ paths: [parent], tick: tickRef.current });
+      announce(`Duplicated as ${finalName}`);
+    } catch (err) {
+      announce(`Duplicate failed: ${(err as Error).message}`);
+    }
+  }, [scope]);
+
+  const handleCutEntry = useCallback((path: string, isDir: boolean) => {
+    setClipboard({ path, isDir, mode: 'cut' });
+    announce(`Cut ${path.split('/').pop()}`);
+  }, []);
+
+  const handleCopyEntry = useCallback((path: string, isDir: boolean) => {
+    setClipboard({ path, isDir, mode: 'copy' });
+    announce(`Copied ${path.split('/').pop()}`);
+  }, []);
+
+  const handlePasteInto = useCallback(async (destDir: string) => {
+    if (!scope || !clipboard) return;
+    const name = clipboard.path.split('/').pop() ?? '';
+    const sourceParent = parentOf(clipboard.path);
+    const samePlace = destDir === sourceParent;
+
+    try {
+      if (clipboard.mode === 'copy') {
+        const baseName = samePlace
+          ? (() => {
+              const dot = !clipboard.isDir ? name.lastIndexOf('.') : -1;
+              return dot > 0 ? `${name.slice(0, dot)} copy${name.slice(dot)}` : `${name} copy`;
+            })()
+          : name;
+        const finalName = await withCollisionRetry(
+          (candidate) => api.files.copy(scope, clipboard.path, joinPath(destDir, candidate)),
+          baseName
+        );
+        tickRef.current += 1;
+        setChangeSignal({ paths: [destDir], tick: tickRef.current });
+        announce(`Pasted ${finalName}`);
+        return;
+      }
+
+      if (samePlace) { announce('Already in this folder'); return; }
+      const finalName = await withCollisionRetry(
+        (candidate) => api.files.rename(scope, clipboard.path, joinPath(destDir, candidate)),
+        name
+      );
+      remapOpenFiles(clipboard.path, joinPath(destDir, finalName), clipboard.isDir);
+      setClipboard(null);
+      tickRef.current += 1;
+      setChangeSignal({ paths: [sourceParent, destDir], tick: tickRef.current });
+      announce(`Moved to ${destDir}`);
+    } catch (err) {
+      announce(`Paste failed: ${(err as Error).message}`);
+    }
+  }, [scope, clipboard, remapOpenFiles]);
+
   const handleDelete = useCallback(async () => {
     if (!scope || !deleteTarget) return;
     setDeleteBusy(true);
     try {
       await api.files.delete(scope, deleteTarget.path, deleteTarget.isDir);
       if (openFiles[deleteTarget.path]) doCloseFile(deleteTarget.path);
-      const parent = deleteTarget.path.split('/').slice(0, -1).join('/') || '/';
+      const parent = parentOf(deleteTarget.path);
+      setClipboard((c) => (c && (c.path === deleteTarget.path || (deleteTarget.isDir && c.path.startsWith(`${deleteTarget.path}/`))) ? null : c));
       tickRef.current += 1;
-      setChangeSignal({ path: parent, tick: tickRef.current });
+      setChangeSignal({ paths: [parent], tick: tickRef.current });
       setDeleteTarget(null);
     } catch (err) {
       announce(`Failed to delete: ${(err as Error).message}`);
@@ -271,7 +432,14 @@ export default function ExplorerWorkspace({ tabs }: ExplorerWorkspaceProps): JSX
               unwatch={unwatch}
               changeSignal={changeSignal}
               onCreateFile={(dir) => { setNewFileDialogDir(dir); setNewFileError(null); }}
+              onCreateFolder={(dir) => { setNewFolderDialogDir(dir); setNewFolderError(null); }}
               onDeleteEntry={(path, isDir) => setDeleteTarget({ path, isDir })}
+              onRenameEntry={handleRenameEntry}
+              onDuplicateEntry={handleDuplicateEntry}
+              clipboard={clipboard}
+              onCutEntry={handleCutEntry}
+              onCopyEntry={handleCopyEntry}
+              onPasteInto={handlePasteInto}
             />
           )}
         </div>
@@ -344,13 +512,30 @@ export default function ExplorerWorkspace({ tabs }: ExplorerWorkspaceProps): JSX
         </>
       )}
 
-      <NewFileDialog
+      <PromptDialog
         open={!!newFileDialogDir}
-        dirPath={newFileDialogDir}
+        title="New file"
+        description={newFileDialogDir ? `in ${newFileDialogDir}` : undefined}
+        placeholder="filename.ext"
+        confirmLabel="Create"
+        busyLabel="Creating…"
         busy={newFileBusy}
         error={newFileError}
-        onCreate={handleCreateFile}
+        onConfirm={handleCreateFile}
         onCancel={() => setNewFileDialogDir(null)}
+      />
+
+      <PromptDialog
+        open={!!newFolderDialogDir}
+        title="New folder"
+        description={newFolderDialogDir ? `in ${newFolderDialogDir}` : undefined}
+        placeholder="folder-name"
+        confirmLabel="Create"
+        busyLabel="Creating…"
+        busy={newFolderBusy}
+        error={newFolderError}
+        onConfirm={handleCreateFolder}
+        onCancel={() => setNewFolderDialogDir(null)}
       />
 
       <ConfirmDialog
