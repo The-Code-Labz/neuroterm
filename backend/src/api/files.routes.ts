@@ -8,6 +8,7 @@ import {
   localBackend,
   sftpBackend,
   removeRecursive,
+  copyRecursive,
   type FileBackend,
 } from '../services/file-fs';
 
@@ -233,6 +234,29 @@ export function filesRouter(db: AppDatabase, cryptoService: CryptoService): Rout
         else await b.removeFile(body.path as string);
       });
       res.status(204).send();
+    } catch (err) {
+      const { status, message } = mapFsError(err);
+      res.status(status).json({ error: message });
+    }
+  });
+
+  // POST /api/files/copy { mode, connection_id?, path, new_path }
+  // Used for Explorer "Copy/Paste" and "Duplicate" — new_path must not
+  // already exist (409), matching VS Code's own collision behavior; the
+  // client is responsible for picking a free name (e.g. suffixing) before
+  // retrying, mirroring how it already handles rename collisions.
+  router.post('/copy', async (req, res) => {
+    const body = req.body as Record<string, unknown>;
+    const scope = resolveScope(req, res, db, body);
+    if (!scope) return;
+    if (!isSafePath(body.path) || !isSafePath(body.new_path)) {
+      res.status(400).json({ error: 'path and new_path are required' });
+      return;
+    }
+
+    try {
+      await withBackend(db, cryptoService, scope, (b) => copyRecursive(b, body.path as string, body.new_path as string, MAX_FILE_BYTES));
+      res.status(201).json({ path: body.new_path });
     } catch (err) {
       const { status, message } = mapFsError(err);
       res.status(status).json({ error: message });
