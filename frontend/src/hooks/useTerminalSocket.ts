@@ -26,6 +26,13 @@ export function useTerminalSocket({
   const reconnectRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectCount = useRef(0);
   const destroyed      = useRef(false);
+  // Last dims actually sent over THIS socket (reset to null on every new
+  // connection, since a fresh attach always needs its own 'init'). Skips
+  // redundant 'resize' sends — e.g. the "re-fit on activation" effect firing
+  // on every tab switch even when the size hasn't actually changed — each
+  // of which is still a real SIGWINCH/window-change round trip for no
+  // visible benefit.
+  const lastDims       = useRef<{ cols: number; rows: number } | null>(null);
 
   const clearTimers = useCallback(() => {
     if (pingRef.current)      { clearInterval(pingRef.current);  pingRef.current = null; }
@@ -54,6 +61,7 @@ export function useTerminalSocket({
 
       // Send initial size
       if (terminal) {
+        lastDims.current = { cols: terminal.cols, rows: terminal.rows };
         ws.send(JSON.stringify({ type: 'init', cols: terminal.cols, rows: terminal.rows }));
       }
 
@@ -119,9 +127,10 @@ export function useTerminalSocket({
   // Send resize to WebSocket
   const sendResize = useCallback((cols: number, rows: number) => {
     const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'resize', cols, rows }));
-    }
+    if (ws?.readyState !== WebSocket.OPEN) return;
+    if (lastDims.current && lastDims.current.cols === cols && lastDims.current.rows === rows) return;
+    lastDims.current = { cols, rows };
+    ws.send(JSON.stringify({ type: 'resize', cols, rows }));
   }, []);
 
   useEffect(() => {
