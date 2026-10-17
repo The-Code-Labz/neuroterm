@@ -120,9 +120,23 @@ export default function XtermPane({ tabId, sessionId, active, chrome = 'tab', ti
       return true;
     });
 
-    requestAnimationFrame(() => {
+    // Fit SYNCHRONOUSLY here, not via requestAnimationFrame. useTerminalSocket
+    // connects and fires its WS 'init' message (carrying term.cols/term.rows)
+    // as soon as `setTerminal` below commits — which happens in the same tick,
+    // well before a deferred rAF callback would ever run. Deferring the fit
+    // meant `init` was sent with xterm's un-fitted construction default
+    // (80x24) nearly every time, immediately followed — once the rAF fit
+    // finally ran — by a second 'resize' carrying the real size. Two
+    // differing SIGWINCHes landing back-to-back on a freshly attached tmux
+    // client is exactly what produced the garbled double-repaint ("nano
+    // drawn over the status bar", dropped/overwritten leading characters)
+    // reported against a *brand-new* connection, not just a reconnect — the
+    // dual-attach fix (PR #14) only covered the reconnect case. Reading
+    // clientWidth/clientHeight here forces the layout read needed for an
+    // accurate fit; no extra frame is required.
+    if (containerRef.current.clientWidth > 0 && containerRef.current.clientHeight > 0) {
       fitAddon.fit();
-    });
+    }
 
     termRef.current   = term;
     fitAddonRef.current = fitAddon;
